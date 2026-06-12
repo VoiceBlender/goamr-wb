@@ -1,0 +1,20 @@
+goamr-wb
+Copyright 2026 The goamr-wb authors
+
+This product is a pure-Go port of AMR-WB (ITU-T G.722.2 / 3GPP TS 26.190,
+26.173, 26.204) derived from the following Apache-2.0 licensed C references:
+
+  - opencore-amrwb (AMR-WB decoder)
+    https://sourceforge.net/projects/opencore-amr/
+    Copyright (C) 2009 Martin Storsjo
+    Copyright (C) The Android Open Source Project
+
+  - vo-amrwbenc (AMR-WB encoder)
+    https://sourceforge.net/projects/opencore-amr/
+    Copyright (C) 2009 Martin Storsjo
+    Copyright (C) 2004-2010 Martin Storsjo, VisualOn
+
+The fixed-point DSP was translated function-by-function from the above
+sources, preserving their algorithms and bit-exact semantics. The original
+works are licensed under the Apache License, Version 2.0; this port is
+distributed under the same license (see LICENSE).
