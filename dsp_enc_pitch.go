@@ -143,21 +143,15 @@ func normCorr(exc []int16, excOff int, xn, h []int16, tMin, tMax int16, corrV []
 	k := -int(tMin)
 	Convolve(exc[excOff+k:], h, excf)
 
-	var lTmp int32
-	for i := 0; i < 64; i++ {
-		lTmp += int32(xn[i]) * int32(xn[i])
-	}
+	lTmp := firDot(xn[:64], xn[:64]) // sum_i xn[i]^2 (wrapping int32) via AVX2
 	lTmp = (lTmp << 1) + 1
 	e := int(norm_l(lTmp))
 	e = 32 - e
 	scale := -(e >> 1)
 
 	for t := tMin; t <= tMax; t++ {
-		var l0, l1 int32
-		for i := 0; i < 64; i++ {
-			l0 += int32(xn[i]) * int32(excf[i])
-			l1 += int32(excf[i]) * int32(excf[i])
-		}
+		l0 := firDot(xn[:64], excf) // <xn, excf>  (wrapping int32) via AVX2
+		l1 := firDot(excf, excf)    // <excf, excf>
 		l0 = (l0 << 1) + 1
 		l1 = (l1 << 1) + 1
 

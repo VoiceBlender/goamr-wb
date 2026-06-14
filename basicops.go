@@ -90,20 +90,34 @@ func shr(a, b int16) int16 {
 
 // L_shl returns the saturated 32-bit left shift; negative b shifts right.
 func L_shl(a int32, b int16) int32 {
-	if b < 0 {
+	if b <= 0 {
+		if b == 0 {
+			return a
+		}
 		return L_shr(a, -b)
 	}
-	result := a
-	for i := int16(0); i < b; i++ {
-		if result > 0x3FFFFFFF {
+	if b >= 31 {
+		if a > 0 {
 			return maxInt32
 		}
-		if result < ^int32(0x3FFFFFFF) {
+		if a < 0 {
 			return minInt32
 		}
-		result <<= 1
+		return 0
 	}
-	return result
+	// The reference shifts one bit at a time, saturating as soon as the value
+	// reaches the overflow region. Since |a<<k| grows monotonically, saturation
+	// is decided by the last pre-shift value a<<(b-1): >= 2^30 -> MAX_32,
+	// < -2^30 -> MIN_32; otherwise a<<b fits. Computed in int64 this is O(1) and
+	// bit-identical to the loop.
+	last := int64(a) << uint(b-1)
+	if last >= 0x40000000 {
+		return maxInt32
+	}
+	if last < -0x40000000 {
+		return minInt32
+	}
+	return a << uint(b)
 }
 
 // L_shr returns the 32-bit arithmetic right shift; negative b shifts left.

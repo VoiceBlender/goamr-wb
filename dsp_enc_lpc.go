@@ -38,21 +38,11 @@ func Autocorr(x []int16, m int16, rH, rL []int16) {
 	rL[0] = int16((lSum & 0xffff) >> 1)
 
 	for i := int16(1); i <= 8; i++ {
-		var lSum1, lSum2 int32
-		flen := cL_WINDOW - 2*int(i)
-		p1 := 0
-		p2 := 2*int(i) - 1
-		for {
-			lSum1 += int32(y[p1]) * int32(y[p2])
-			p2++
-			lSum2 += int32(y[p1]) * int32(y[p2])
-			p1++
-			flen--
-			if flen == 0 {
-				break
-			}
-		}
-		lSum1 += int32(y[p1]) * int32(y[p2])
+		// autocorrelation at lags 2i-1 and 2i: r[L] = sum_k y[k]·y[k+L]
+		// = firDot(y[:N-L], y[L:]) (wrapping int32), vectorised via AVX2.
+		d := 2 * int(i)
+		lSum1 := firDot(y[:cL_WINDOW-d+1], y[d-1:]) // lag 2i-1
+		lSum2 := firDot(y[:cL_WINDOW-d], y[d:])     // lag 2i
 
 		lSum1 <<= uint(norm)
 		lSum2 <<= uint(norm)

@@ -21,9 +21,26 @@ func firRaw(dst []int32, x []int16, coef []int16) {
 }
 
 // maxFIRTaps bounds the stack-resident sign-extended coefficient buffer.
-const maxFIRTaps = 64
+// maxFIRTaps covers the longest FIR: the open-loop pitch correlation window
+// (a whole frame, 256 samples).
+const maxFIRTaps = 256
 
 // firRawAVX2 is implemented in simd_amd64.s. coef32 holds sign-extended taps.
 //
 //go:noescape
 func firRawAVX2(dst []int32, x []int16, coef32 []int32)
+
+// firDot computes the wrapping-int32 dot product sum_i a[i]*b[i] over len(a)
+// elements. On AVX2 it uses VPMADDWD across 16 int16 per iteration; otherwise it
+// falls back.
+func firDot(a, b []int16) int32 {
+	if useAVX2 && len(a) >= 16 {
+		return firDotAVX2(a, b)
+	}
+	return firDotGeneric(a, b)
+}
+
+// firDotAVX2 is implemented in simd_amd64.s. It reads len(a) int16 from a and b.
+//
+//go:noescape
+func firDotAVX2(a, b []int16) int32

@@ -86,13 +86,19 @@ func Pitch_med_ol(wsp []int16, wspOff int, oldT0Med int16, olGain *int16,
 	wwIdx := 198
 	weIdx := 98 + lMax - int(l0)
 
+	// Open-loop correlation r0(i) = 2·sum_j wsp[wspOff+j]·wsp[wspOff-i+j] over the
+	// candidate lags. With the fixed window coef = wsp[wspOff:wspOff+lFrame] this
+	// is one sliding FIR over wsp[wspOff-lMax:], so dst[lMax-i] = r0(i)>>1. firRaw
+	// (AVX2) vectorises it; the wrapping int32 accumulation is bit-identical and
+	// the per-term <<1 distributes over the sum.
+	var dstArr [lMax - lMin]int32
+	dst := dstArr[:]
+	firRaw(dst, wsp[wspOff-lMax:], wsp[wspOff:wspOff+int(lFrame)])
+
 	max := int32(min32)
 	Tm := int16(0)
 	for i := int16(lMax); i > lMin; i-- {
-		var r0 int32
-		for j := 0; j < int(lFrame); j++ {
-			r0 += (int32(wsp[wspOff+j]) * int32(wsp[wspOff-int(i)+j])) << 1 // vo_L_mult
-		}
+		r0 := dst[lMax-int(i)] << 1
 		hi := int16(r0 >> 16)
 		lo := int16((r0 & 0xffff) >> 1)
 		r0 = mpy3216(hi, lo, corrweight[wwIdx])
@@ -112,17 +118,15 @@ func Pitch_med_ol(wsp []int16, wspOff int, oldT0Med int16, olGain *int16,
 	// High-pass the wsp[] vector into oldHpWsp[lMax:].
 	Hp_wsp(wsp[wspOff:], oldHpWsp[lMax:], lFrame, hpWspMem)
 
-	// Normalized correlation at delay Tm.
-	var r0, r1, r2 int32
+	// Normalized correlation at delay Tm — three dot products over the high-passed
+	// signal, vectorised via firDot (wrapping int32, bit-identical).
 	p1 := lMax
 	p2 := lMax - int(Tm)
-	for j := 0; j < int(lFrame); j++ {
-		r2 += int32(oldHpWsp[p1]) * int32(oldHpWsp[p1])
-		r1 += int32(oldHpWsp[p2]) * int32(oldHpWsp[p2])
-		r0 += int32(oldHpWsp[p1]) * int32(oldHpWsp[p2])
-		p1++
-		p2++
-	}
+	a1 := oldHpWsp[p1 : p1+int(lFrame)]
+	a2 := oldHpWsp[p2 : p2+int(lFrame)]
+	r2 := firDot(a1, a1)
+	r1 := firDot(a2, a2)
+	r0 := firDot(a1, a2)
 	r0 <<= 1
 	r1 = (r1 << 1) + 1
 	r2 = (r2 << 1) + 1

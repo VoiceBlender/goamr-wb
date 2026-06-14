@@ -23,3 +23,15 @@ func firRawGeneric(dst []int32, x []int16, coef []int16) {
 		dst[o] = s
 	}
 }
+
+// firDotGeneric computes the wrapping-int32 dot product sum_i a[i]*b[i] over the
+// first len(a) elements (requires len(b) >= len(a)). The amd64 build vectorises
+// it with VPMADDWD; this is the portable fallback and the fuzz-test oracle.
+func firDotGeneric(a, b []int16) int32 {
+	bb := b[:len(a)]
+	var s int32
+	for i, av := range a {
+		s += int32(av) * int32(bb[i])
+	}
+	return s
+}

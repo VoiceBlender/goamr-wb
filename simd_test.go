@@ -55,3 +55,33 @@ func TestFIRRawMatchesGeneric(t *testing.T) {
 		}
 	}
 }
+
+// TestFIRDotMatchesGeneric fuzzes firDot (VPMADDWD reduction) against the scalar
+// oracle over lengths spanning the 16-wide vector body and the scalar tail,
+// including worst-case magnitudes that force 32-bit wraparound.
+func TestFIRDotMatchesGeneric(t *testing.T) {
+	seed := uint32(0xDECAFBAD)
+	next := func() int16 { seed = seed*1664525 + 1013904223; return int16(seed >> 16) }
+	for n := 0; n <= 300; n++ {
+		a := make([]int16, n)
+		b := make([]int16, n)
+		for i := 0; i < n; i++ {
+			a[i] = next()
+			b[i] = next()
+		}
+		if got, want := firDot(a, b), firDotGeneric(a, b); got != want {
+			t.Fatalf("n=%d: firDot=%d want=%d", n, got, want)
+		}
+	}
+	for _, n := range []int{16, 17, 40, 48, 64, 80, 128, 240} {
+		a := make([]int16, n)
+		b := make([]int16, n)
+		for i := 0; i < n; i++ {
+			a[i] = -32768
+			b[i] = -32768
+		}
+		if got, want := firDot(a, b), firDotGeneric(a, b); got != want {
+			t.Fatalf("overflow n=%d: firDot=%d want=%d", n, got, want)
+		}
+	}
+}

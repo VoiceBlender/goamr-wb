@@ -34,45 +34,58 @@ payload and returns concatenated PCM for every frame it carries.
 ## Performance
 
 Both directions run **far faster than real time** on a single core (a 20 ms frame's budget is
-20 ms), and the pure-Go codec is **within ~7–42 % of the optimized scalar C reference** —
-mode-8 decode is essentially at parity (1.07×). The hot FIR/correlation kernels use an AVX2
-assembly path on `amd64`; other architectures fall back to a bit-identical pure-Go
-implementation (correct, but not SIMD-accelerated).
+20 ms). The hot FIR/correlation kernels (open-loop pitch, autocorrelation, normalized
+correlation, residual, and adaptive-codebook interpolation) use AVX2 assembly on `amd64` —
+`firRaw` (sliding correlation) and `firDot` (horizontal dot product) — falling back to a
+bit-identical pure-Go path elsewhere. An encoder pass vectorized the open-loop pitch /
+autocorrelation / `normCorr` kernels and made `L_shl` O(1) (**encode 8–16 %** faster); a later
+pass routed the decoder's `Pred_lt4` adaptive-codebook interpolation through `firDot`
+(**decode ~6–9 %** faster, halving the gap to C). Every kernel is fuzz-tested bit-identical to
+its scalar fallback, the encoder is **bit-exact** with `vo-amrwbenc`, and the decoder is
+**bit-exact** with `opencore-amrwb`.
 
 Measured on an **AMD Ryzen 9 7900 (Zen 4, AVX2), Go 1.26.3, linux/amd64, single core**.
 `Go ×RT` = how many times faster than real time one core runs (so also ≈ concurrent streams
 per core). `C` is the Apache-2.0 `vo-amrwbenc` / `opencore-amrwb` reference, measured across a
-subprocess with the two-point slope method (3000 frames) to cancel process/I-O overhead; the
-residual per-frame pipe copy modestly favors the in-process Go figure. Deterministic synthetic
-speech. Reproduce with `make bench` (Go-only) and `make bench-vs-c` (needs the C harnesses).
+subprocess with the two-point-slope method (4000 frames) to cancel process startup; the
+residual per-frame pipe copy modestly favors the in-process Go figure. The tables below are a
+single back-to-back run, so Go and C are measured under identical conditions and the `Go/C`
+ratio is apples-to-apples. **Caveat:** absolute figures still depend on CPU boost state and
+system load, so treat `Go ×RT` as order-of-magnitude and expect the C subprocess timing to
+drift between sessions. Deterministic synthetic speech. Reproduce with `make bench` (Go-only)
+and `make bench-vs-c` (needs the C harnesses).
 
 **Encode** (µs per 20 ms frame):
 
 | Mode (kbit/s) | Go | C | Go/C | Go ×RT |
 |---|---|---|---|---|
-| 6.60  | 102.8 |  94.3 | 1.09 | 195× |
-| 8.85  | 133.2 | 104.4 | 1.28 | 150× |
-| 12.65 | 157.1 | 117.4 | 1.34 | 127× |
-| 14.25 | 172.7 | 124.7 | 1.39 | 116× |
-| 15.85 | 174.0 | 127.1 | 1.37 | 115× |
-| 18.25 | 179.4 | 128.7 | 1.39 | 112× |
-| 19.85 | 187.4 | 133.5 | 1.40 | 107× |
-| 23.05 | 186.4 | 131.0 | 1.42 | 107× |
-| 23.85 | 171.8 | 129.1 | 1.33 | 116× |
+| 6.60  |  87.8 |  66.6 | 1.32 | 228× |
+| 8.85  | 119.2 |  77.7 | 1.53 | 168× |
+| 12.65 | 143.9 |  90.9 | 1.58 | 139× |
+| 14.25 | 157.6 |  98.6 | 1.60 | 127× |
+| 15.85 | 159.3 |  98.9 | 1.61 | 126× |
+| 18.25 | 168.0 | 102.8 | 1.63 | 119× |
+| 19.85 | 174.7 | 107.2 | 1.63 | 115× |
+| 23.05 | 172.8 | 106.1 | 1.63 | 116× |
+| 23.85 | 157.8 |  98.5 | 1.60 | 127× |
 
 **Decode** (µs per 20 ms frame):
 
 | Mode (kbit/s) | Go | C | Go/C | Go ×RT |
 |---|---|---|---|---|
-| 6.60  | 32.1 | 26.2 | 1.23 | 623× |
-| 8.85  | 28.2 | 23.7 | 1.19 | 710× |
-| 12.65 | 26.4 | 21.8 | 1.21 | 757× |
-| 14.25 | 25.5 | 21.4 | 1.19 | 783× |
-| 15.85 | 25.7 | 22.0 | 1.17 | 778× |
-| 18.25 | 26.1 | 22.3 | 1.18 | 765× |
-| 19.85 | 26.5 | 22.6 | 1.17 | 755× |
-| 23.05 | 27.0 | 23.3 | 1.16 | 741× |
-| 23.85 | 27.8 | 26.0 | 1.07 | 720× |
+| 6.60  | 30.2 | 25.8 | 1.17 | 662× |
+| 8.85  | 26.7 | 23.1 | 1.16 | 749× |
+| 12.65 | 24.6 | 21.8 | 1.13 | 813× |
+| 14.25 | 24.5 | 21.9 | 1.12 | 817× |
+| 15.85 | 24.8 | 22.0 | 1.13 | 807× |
+| 18.25 | 25.2 | 22.5 | 1.12 | 794× |
+| 19.85 | 25.4 | 22.5 | 1.13 | 788× |
+| 23.05 | 26.2 | 23.1 | 1.13 | 765× |
+| 23.85 | 26.9 | 25.8 | 1.04 | 744× |
+
+The remaining encode gap is the algebraic codebook search (`corHVec012`, `searchIxiy`,
+`ACELP_4t64`) — a branchy depth-first search that's scalar in the C reference too, so it
+doesn't vectorize.
 
 ## Tests & benchmarks
 

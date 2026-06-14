@@ -60,61 +60,21 @@ func Pred_lt4(exc []int16, off int, T0, frac, lSubfr int16) {
 		ptBase--
 	}
 	ptBase -= cL_INTERPOL2 - 1
-	pt := inter4_2[cUP_SAMP-1-frac]
+	pt := inter4_2[cUP_SAMP-1-frac][:] // 2*cL_INTERPOL2 polyphase taps
 
-	var j int16
-	for j = 0; j < lSubfr>>2; j++ {
-		lSum1 := int32(0x00002000)
-		lSum2 := int32(0x00002000)
-		lSum3 := int32(0x00002000)
-		lSum4 := int32(0x00002000)
-		for i := 0; i < cL_INTERPOL2<<1; i += 4 {
-			tmp1 := exc[ptBase+i]
-			tmp2 := exc[ptBase+i+1]
-			tmp3 := exc[ptBase+i+2]
-			lSum1 = fxp_mac_16by16(tmp1, pt[i], lSum1)
-			lSum2 = fxp_mac_16by16(tmp2, pt[i], lSum2)
-			lSum1 = fxp_mac_16by16(tmp2, pt[i+1], lSum1)
-			lSum2 = fxp_mac_16by16(tmp3, pt[i+1], lSum2)
-			lSum3 = fxp_mac_16by16(tmp3, pt[i], lSum3)
-			lSum1 = fxp_mac_16by16(tmp3, pt[i+2], lSum1)
-
-			tmp1 = exc[ptBase+i+3]
-			tmp2 = exc[ptBase+i+4]
-			lSum4 = fxp_mac_16by16(tmp1, pt[i], lSum4)
-			lSum3 = fxp_mac_16by16(tmp1, pt[i+1], lSum3)
-			lSum2 = fxp_mac_16by16(tmp1, pt[i+2], lSum2)
-			lSum1 = fxp_mac_16by16(tmp1, pt[i+3], lSum1)
-			lSum4 = fxp_mac_16by16(tmp2, pt[i+1], lSum4)
-			lSum2 = fxp_mac_16by16(tmp2, pt[i+3], lSum2)
-			lSum3 = fxp_mac_16by16(tmp2, pt[i+2], lSum3)
-
-			tmp1 = exc[ptBase+i+5]
-			tmp2 = exc[ptBase+i+6]
-			lSum4 = fxp_mac_16by16(tmp1, pt[i+2], lSum4)
-			lSum3 = fxp_mac_16by16(tmp1, pt[i+3], lSum3)
-			lSum4 = fxp_mac_16by16(tmp2, pt[i+3], lSum4)
-		}
-		exc[off+int(j<<2)] = int16(lSum1 >> 14)
-		exc[off+int(j<<2)+1] = int16(lSum2 >> 14)
-		exc[off+int(j<<2)+2] = int16(lSum3 >> 14)
-		exc[off+int(j<<2)+3] = int16(lSum4 >> 14)
-		ptBase += 4
-	}
-
-	if lSubfr&1 != 0 {
-		lSum1 := int32(0x00002000)
-		for i := 0; i < 2*cL_INTERPOL2; i += 4 {
-			tmp1 := exc[ptBase+i]
-			tmp2 := exc[ptBase+i+1]
-			lSum1 = fxp_mac_16by16(tmp1, pt[i], lSum1)
-			lSum1 = fxp_mac_16by16(tmp2, pt[i+1], lSum1)
-			tmp1 = exc[ptBase+i+2]
-			tmp2 = exc[ptBase+i+3]
-			lSum1 = fxp_mac_16by16(tmp1, pt[i+2], lSum1)
-			lSum1 = fxp_mac_16by16(tmp2, pt[i+3], lSum1)
-		}
-		exc[off+int(j<<2)] = int16(lSum1 >> 14)
+	// Each output is a sliding-window dot product of the excitation with the
+	// fractional-delay filter: exc[off+m] = (0x2000 + sum_k exc[ptBase+m+k]*
+	// pt[k]) >> 14 for k = 0..2*L_INTERPOL2-1. The reference (pred_lt4.cpp)
+	// interleaves four outputs to reuse loaded samples; since fxp_mac is a
+	// wrapping (non-saturating) int32 accumulate, firDot's lane-parallel sum is
+	// bit-identical. The pitch lag T0 >= PIT_MIN (34) exceeds the filter's
+	// forward reach (L_INTERPOL2 = 16), so every read index is strictly below
+	// the current output and writing in increasing order reproduces the
+	// reference feedback exactly.
+	const taps = 2 * cL_INTERPOL2
+	for m := 0; m < int(lSubfr); m++ {
+		s := int32(0x00002000) + firDot(exc[ptBase+m:ptBase+m+taps], pt)
+		exc[off+m] = int16(s >> 14)
 	}
 }
 
