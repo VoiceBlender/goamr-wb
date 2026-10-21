@@ -30,7 +30,19 @@ func packFrame(prms []int16, mode int16) []byte {
 	if mode < 0 || int(mode) >= len(packed_size) {
 		return nil
 	}
-	out := make([]byte, packed_size[mode])
+	return packFrameInto(make([]byte, packed_size[mode]), prms, mode)
+}
+
+// packFrameInto is packFrame writing into out, which must hold at least
+// packed_size[mode] bytes; it returns out resliced to that size.
+func packFrameInto(out []byte, prms []int16, mode int16) []byte {
+	if mode < 0 || int(mode) >= len(packed_size) {
+		return nil
+	}
+	out = out[:packed_size[mode]]
+	for i := range out {
+		out[i] = 0
+	}
 	st := sortTables[mode]
 	n := int(unpacked_size[mode])
 	for i := 0; i < n && i < len(st); i++ {

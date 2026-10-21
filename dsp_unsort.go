@@ -23,7 +23,19 @@ func mimeUnsort(packed []byte, mode int16) []int16 {
 	if mode < 0 || int(mode) >= len(unpacked_size) {
 		return nil
 	}
-	out := make([]int16, unpacked_size[mode])
+	return mimeUnsortInto(make([]int16, unpacked_size[mode]), packed, mode)
+}
+
+// mimeUnsortInto is mimeUnsort writing into out, which must hold at least
+// unpacked_size[mode] entries; it returns out resliced to that size.
+func mimeUnsortInto(out []int16, packed []byte, mode int16) []int16 {
+	if mode < 0 || int(mode) >= len(unpacked_size) {
+		return nil
+	}
+	out = out[:unpacked_size[mode]]
+	for i := range out {
+		out[i] = 0
+	}
 	if int(mode) >= len(sortTables) || sortTables[mode] == nil {
 		return out
 	}
@@ -32,7 +44,7 @@ func mimeUnsort(packed []byte, mode int16) []int16 {
 	k := 0
 	for b := 0; b < nbytes && b < len(packed); b++ {
 		temp := packed[b]
-		for bit := 0; bit < 8; bit++ {
+		for range 8 {
 			if temp&0x80 != 0 {
 				out[st[k]] = cBIT_1
 			}

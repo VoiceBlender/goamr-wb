@@ -2,6 +2,15 @@ package amrwb
 
 import "errors"
 
+// MaxPayloadBytes is the largest single-frame RTP payload produced by
+// EncodeTo (mode 23.85 kbit/s, either framing); size dst accordingly.
+const MaxPayloadBytes = 62
+
+var (
+	errEncodeFrameSize = errors.New("amrwb: encode expects exactly 320 samples")
+	errShortDst        = errors.New("amrwb: destination buffer too small")
+)
+
 // Encoder encodes 16 kHz mono PCM into AMR-WB RFC 4867 RTP payloads.
 //
 // It satisfies the codec.Encoder interface: Encode takes one 20 ms frame
@@ -11,6 +20,8 @@ type Encoder struct {
 	mode         Mode
 	octetAligned bool
 	st           encoderState
+	scaled       [FrameSamples]int16
+	frameBits    [60]byte // packed speech bits of the largest mode
 }
 
 // EncoderConfig configures a new AMR-WB encoder.
@@ -44,22 +55,42 @@ func NewEncoder(cfg EncoderConfig) (*Encoder, error) {
 // reference is needed to find the exact missing saturation. Until then, the
 // -6 dB headroom keeps the decoded output below full scale.
 func (e *Encoder) Encode(samples []int16) ([]byte, error) {
-	if len(samples) != FrameSamples {
-		return nil, errors.New("amrwb: encode expects exactly 320 samples")
-	}
-	scaled := make([]int16, FrameSamples)
-	for i, s := range samples {
-		scaled[i] = s >> 1
-	}
-	bits, err := e.st.encodeFrame(e.mode, scaled)
+	out := make([]byte, MaxPayloadBytes)
+	n, err := e.EncodeTo(out, samples)
 	if err != nil {
 		return nil, err
 	}
-	f := frame{ft: e.mode.FrameType(), q: true, data: bits}
-	if e.octetAligned {
-		return packPayloadOctet(noCMR, []frame{f}), nil
+	return out[:n], nil
+}
+
+// EncodeTo is Encode writing the RTP payload into dst, which must hold at
+// least MaxPayloadBytes bytes (or the payload size of the active mode). It
+// returns the payload length and does not allocate.
+func (e *Encoder) EncodeTo(dst []byte, samples []int16) (int, error) {
+	if len(samples) != FrameSamples {
+		return 0, errEncodeFrameSize
 	}
-	return packPayloadBandwidthEfficient(noCMR, []frame{f}), nil
+	for i, s := range samples {
+		e.scaled[i] = s >> 1
+	}
+	bits, err := e.st.encodeFrameInto(e.frameBits[:], e.mode, e.scaled[:])
+	if err != nil {
+		return 0, err
+	}
+	f := frame{ft: e.mode.FrameType(), q: true, data: bits}
+	var (
+		n  int
+		ok bool
+	)
+	if e.octetAligned {
+		n, ok = packOctetInto(dst, noCMR, f)
+	} else {
+		n, ok = packBandwidthEfficientInto(dst, noCMR, f)
+	}
+	if !ok {
+		return 0, errShortDst
+	}
+	return n, nil
 }
 
 // SetMode changes the active speech mode (e.g. in response to a peer CMR).
@@ -76,6 +107,7 @@ func (e *Encoder) Reset() { e.st.reset() }
 type Decoder struct {
 	octetAligned bool
 	st           decoderState
+	parser       payloadParser
 }
 
 // DecoderConfig configures a new AMR-WB decoder.
@@ -93,27 +125,50 @@ func NewDecoder(cfg DecoderConfig) *Decoder {
 // Decode decodes one RTP payload, returning concatenated PCM for all frames it
 // carries (one 320-sample frame per speech/SID/no-data ToC entry).
 func (d *Decoder) Decode(payload []byte) ([]int16, error) {
-	var (
-		frames []frame
-		err    error
-	)
-	if d.octetAligned {
-		_, frames, err = unpackPayloadOctet(payload)
-	} else {
-		_, frames, err = unpackPayloadBandwidthEfficient(payload)
-	}
+	frames, err := d.parse(payload)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]int16, 0, len(frames)*FrameSamples)
-	for _, f := range frames {
-		pcm, derr := d.st.decodeFrame(f)
-		if derr != nil {
-			return nil, derr
-		}
-		out = append(out, pcm...)
+	out := make([]int16, len(frames)*FrameSamples)
+	if err := d.decodeFrames(out, frames); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// DecodeTo is Decode writing the PCM into dst, which must hold 320 samples
+// per frame carried by the payload (320 for the usual single-frame packet).
+// It returns the number of samples written and, once its internal buffers
+// have grown to the largest payload seen, does not allocate.
+func (d *Decoder) DecodeTo(dst []int16, payload []byte) (int, error) {
+	frames, err := d.parse(payload)
+	if err != nil {
+		return 0, err
+	}
+	n := len(frames) * FrameSamples
+	if len(dst) < n {
+		return 0, errShortDst
+	}
+	if err := d.decodeFrames(dst[:n], frames); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (d *Decoder) parse(payload []byte) ([]frame, error) {
+	if d.octetAligned {
+		return d.parser.parseOctet(payload)
+	}
+	return d.parser.parseBandwidthEfficient(payload)
+}
+
+func (d *Decoder) decodeFrames(dst []int16, frames []frame) error {
+	for i, f := range frames {
+		if err := d.st.decodeFrameInto(f, dst[i*FrameSamples:(i+1)*FrameSamples]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Reset clears all decoder state.
