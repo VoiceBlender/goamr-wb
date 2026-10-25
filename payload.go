@@ -161,6 +161,101 @@ func unpackPayloadBandwidthEfficient(p []byte) (cmr int, frames []frame, err err
 	return cmr, frames, nil
 }
 
+// payloadParser parses RFC 4867 payloads into frames without allocating once
+// its scratch buffers have grown to the largest payload seen. Octet-aligned
+// frame data aliases the payload; bandwidth-efficient frame data aliases the
+// parser's bit buffer. Frames are valid until the next parse.
+type payloadParser struct {
+	frames []frame
+	fts    []int
+	qs     []bool
+	bits   []byte
+}
+
+func (pp *payloadParser) parseOctet(p []byte) ([]frame, error) {
+	if len(p) < 1 {
+		return nil, errShortPayload
+	}
+	idx := 1
+	tocStart := idx
+	for {
+		if idx >= len(p) {
+			return nil, errShortPayload
+		}
+		toc := p[idx]
+		idx++
+		if toc&0x80 == 0 {
+			break
+		}
+	}
+	frames := pp.frames[:0]
+	for _, toc := range p[tocStart:idx] {
+		ft := int(toc>>3) & 0x0F
+		nb, ok := frameBytesByFT(ft)
+		if !ok {
+			return nil, errBadFrameType
+		}
+		if idx+nb > len(p) {
+			return nil, errShortPayload
+		}
+		frames = append(frames, frame{ft: ft, q: toc&0x04 != 0, data: p[idx : idx+nb : idx+nb]})
+		idx += nb
+	}
+	pp.frames = frames
+	return frames, nil
+}
+
+func (pp *payloadParser) parseBandwidthEfficient(p []byte) ([]frame, error) {
+	r := bitReader{data: p}
+	if _, ok := r.readBits(4); !ok {
+		return nil, errShortPayload
+	}
+	fts, qs := pp.fts[:0], pp.qs[:0]
+	total := 0
+	for {
+		fBit, ok := r.readBits(1)
+		if !ok {
+			return nil, errShortPayload
+		}
+		ft, ok := r.readBits(4)
+		if !ok {
+			return nil, errShortPayload
+		}
+		qBit, ok := r.readBits(1)
+		if !ok {
+			return nil, errShortPayload
+		}
+		bits, valid := frameBitsByFT(int(ft))
+		if !valid {
+			return nil, errBadFrameType
+		}
+		fts, qs = append(fts, int(ft)), append(qs, qBit == 1)
+		total += (bits + 7) / 8
+		if fBit == 0 {
+			break
+		}
+	}
+	pp.fts, pp.qs = fts, qs
+	if cap(pp.bits) < total {
+		pp.bits = make([]byte, total)
+	}
+	buf := pp.bits[:total]
+	frames := pp.frames[:0]
+	off := 0
+	for i, ft := range fts {
+		bits, _ := frameBitsByFT(ft)
+		nb := (bits + 7) / 8
+		data := buf[off : off+nb : off+nb]
+		if !r.readBitsInto(data, bits) {
+			return nil, errShortPayload
+		}
+		frames = append(frames, frame{ft: ft, q: qs[i], data: data})
+		off += nb
+	}
+	pp.frames = frames
+	return frames, nil
+}
+
 // bitWriter accumulates bits MSB-first into a byte slice.
 type bitWriter struct {
 	buf  []byte
@@ -225,13 +320,66 @@ func (r *bitReader) readBits(n int) (uint32, bool) {
 // readBitsToBytes reads n bits and returns them left-justified in a byte slice.
 func (r *bitReader) readBitsToBytes(n int) ([]byte, bool) {
 	out := make([]byte, (n+7)/8)
-	for i := 0; i < n; i++ {
+	if !r.readBitsInto(out, n) {
+		return nil, false
+	}
+	return out, true
+}
+
+// readBitsInto reads n bits left-justified into out, which must hold
+// (n+7)/8 bytes; it overwrites out.
+func (r *bitReader) readBitsInto(out []byte, n int) bool {
+	for i := range out {
+		out[i] = 0
+	}
+	for i := range n {
 		if r.pos >= len(r.data)*8 {
-			return nil, false
+			return false
 		}
 		bit := r.data[r.pos/8] >> uint(7-r.pos%8) & 1
 		out[i/8] |= bit << uint(7-i%8)
 		r.pos++
 	}
-	return out, true
+	return true
+}
+
+// packOctetInto writes an octet-aligned single-frame payload into dst and
+// returns the number of bytes written, or false if dst is too small.
+func packOctetInto(dst []byte, cmr int, f frame) (int, bool) {
+	nb, _ := frameBytesByFT(f.ft)
+	n := 2 + nb
+	if len(dst) < n {
+		return 0, false
+	}
+	dst[0] = byte(cmr&0x0F) << 4
+	toc := byte(f.ft&0x0F) << 3
+	if f.q {
+		toc |= 0x04
+	}
+	dst[1] = toc
+	clear(dst[2:n])
+	copy(dst[2:n], f.data)
+	return n, true
+}
+
+// packBandwidthEfficientInto writes a bandwidth-efficient single-frame
+// payload into dst and returns the number of bytes written, or false if dst
+// is too small.
+func packBandwidthEfficientInto(dst []byte, cmr int, f frame) (int, bool) {
+	bits, _ := frameBitsByFT(f.ft)
+	n := (4 + 6 + bits + 7) / 8
+	if len(dst) < n {
+		return 0, false
+	}
+	w := bitWriter{buf: dst[:0:n]}
+	w.writeBits(uint32(cmr&0x0F), 4)
+	w.writeBits(0, 1) // F: last frame
+	w.writeBits(uint32(f.ft&0x0F), 4)
+	q := uint32(0)
+	if f.q {
+		q = 1
+	}
+	w.writeBits(q, 1)
+	w.writeBitsFromBytes(f.data, bits)
+	return len(w.bytes()), true
 }

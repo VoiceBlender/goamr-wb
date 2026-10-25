@@ -33,6 +33,13 @@ func (s *encoderState) reset() {
 // The VAD is stubbed to always-active, so the vad_flag bit and DTX/SID encoding
 // are not reference-accurate on silence/noise; the decoder ignores vad_flag.
 func (s *encoderState) encodeFrame(mode Mode, samples []int16) ([]byte, error) {
+	out := make([]byte, packed_size[mode])
+	return s.encodeFrameInto(out, mode, samples)
+}
+
+// encodeFrameInto is encodeFrame writing the packed frame into dst, which must
+// hold at least packed_size[mode] bytes. It does not allocate.
+func (s *encoderState) encodeFrameInto(dst []byte, mode Mode, samples []int16) ([]byte, error) {
 	if !s.started {
 		s.reset()
 	}
@@ -50,7 +57,7 @@ func (s *encoderState) encodeFrame(mode Mode, samples []int16) ([]byte, error) {
 	}
 	m := int16(mode)
 	s.st.coder(&m, in, prms, 0)
-	return packFrame(prms, int16(mode)), nil
+	return packFrameInto(dst, prms, int16(mode)), nil
 }
 
 // decoderState holds the persistent decoder synthesis state across frames.
@@ -58,6 +65,7 @@ type decoderState struct {
 	dsp      decoderStateDSP
 	lastMode Mode
 	started  bool
+	params   [cNBBITS_24k]int16 // de-sorted parameter scratch, reused per frame
 }
 
 func (s *decoderState) reset() {
@@ -75,10 +83,20 @@ func (s *decoderState) reset() {
 // reference Serial_parm order; this is validated against the 3GPP TS 26.174
 // test vectors before AMR-WB is offered in SDP.
 func (s *decoderState) decodeFrame(f frame) ([]int16, error) {
+	synth := make([]int16, cAMR_WB_PCM_FRAME)
+	if err := s.decodeFrameInto(f, synth); err != nil {
+		return nil, err
+	}
+	return synth, nil
+}
+
+// decodeFrameInto is decodeFrame writing the 320 samples into synth, which
+// must hold at least cAMR_WB_PCM_FRAME samples. It does not allocate.
+func (s *decoderState) decodeFrameInto(f frame, synth []int16) error {
 	if !s.started {
 		s.reset()
 	}
-	synth := make([]int16, cAMR_WB_PCM_FRAME)
+	synth = synth[:cAMR_WB_PCM_FRAME]
 
 	var mode Mode
 	var frameType int16
@@ -108,13 +126,16 @@ func (s *decoderState) decodeFrame(f frame) ([]int16, error) {
 	var params []int16
 	switch frameType {
 	case cRX_SPEECH_GOOD, cRX_SPEECH_BAD:
-		params = mimeUnsort(f.data, int16(mode))
+		params = mimeUnsortInto(s.params[:], f.data, int16(mode))
 	case cRX_SID_UPDATE:
-		params = mimeUnsort(f.data, int16(dMRDTX))
+		params = mimeUnsortInto(s.params[:], f.data, int16(dMRDTX))
 	default:
-		params = make([]int16, amrwbCompressed[mode])
+		params = s.params[:amrwbCompressed[mode]]
+		for i := range params {
+			params[i] = 0
+		}
 	}
 
 	s.dsp.decodeAmrWb(int16(mode), params, frameType, synth)
-	return synth, nil
+	return nil
 }
