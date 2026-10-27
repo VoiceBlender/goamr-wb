@@ -6,8 +6,22 @@ framing in both octet-aligned and bandwidth-efficient formats.
 
 Every Go AMR-WB option on pkg.go.dev is a cgo wrapper around the C `opencore-amrwb` /
 `vo-amrwbenc` libraries. This package is a hand-port of that fixed-point reference to Go,
-so it builds with `CGO_ENABLED=0` and cross-compiles anywhere Go does. The DSP is
-**bit-exact** against the C reference for all nine modes (see the differential tests).
+so it builds with `CGO_ENABLED=0` and cross-compiles anywhere Go does.
+
+The decoder is **bit-exact** with `opencore-amrwb`'s `D_IF_decode` in all nine modes for
+speech frames, lost frames (concealment), mode switches, and decoder homing frames,
+including its 14-bit output. Known gaps:
+
+- **Comfort noise:** SID/DTX comfort-noise synthesis is not ported, so SID frames decode
+  as silence.
+- **Q bit:** frames with Q=0 are treated as bad frames (RFC 4867). `D_IF_decode` ignores
+  the Q bit.
+
+The encoder is **bit-exact** with `vo-amrwbenc`'s `E_IF_encode` (DTX off) in all nine
+modes, from quiet to clipped input and across mode switches, including the VAD flag. It
+does not implement DTX, so it never emits SID frames.
+
+Both claims are checked by the differential tests below.
 
 ## Install
 
@@ -37,12 +51,11 @@ Both directions run **far faster than real time** on a single core (a 20 ms fram
 20 ms). The hot FIR/correlation kernels (open-loop pitch, autocorrelation, normalized
 correlation, residual, and adaptive-codebook interpolation) use AVX2 assembly on `amd64` —
 `firRaw` (sliding correlation) and `firDot` (horizontal dot product) — falling back to a
-bit-identical pure-Go path elsewhere. An encoder pass vectorized the open-loop pitch /
-autocorrelation / `normCorr` kernels and made `L_shl` O(1) (**encode 8–16 %** faster); a later
+bit-identical pure-Go path elsewhere (or on `amd64` with `-tags purego`). An encoder pass
+vectorized the open-loop pitch / autocorrelation / `normCorr` kernels and made `L_shl` O(1) (**encode 8–16 %** faster); a later
 pass routed the decoder's `Pred_lt4` adaptive-codebook interpolation through `firDot`
 (**decode ~6–9 %** faster, halving the gap to C). Every kernel is fuzz-tested bit-identical to
-its scalar fallback, the encoder is **bit-exact** with `vo-amrwbenc`, and the decoder is
-**bit-exact** with `opencore-amrwb`.
+its scalar fallback (see the bit-exactness notes above).
 
 Measured on an **AMD Ryzen 9 7900 (Zen 4, AVX2), Go 1.26.3, linux/amd64, single core**.
 `Go ×RT` = how many times faster than real time one core runs (so also ≈ concurrent streams
@@ -99,27 +112,32 @@ go test -bench 'BenchmarkEncode|BenchmarkDecode' -benchmem .   # or: make bench
 
 ### Differential & speed-vs-C tests (optional, need the C reference)
 
-The bit-exact differential tests and the Go-vs-C speed comparison run a locally built
-harness around the Apache-2.0 `vo-amrwbenc` (encoder) / `opencore-amrwb` (decoder) C
-sources. They **skip** unless pointed at that harness:
+The bit-exact differential tests and the Go-vs-C speed comparison drive the stock
+Apache-2.0 `opencore-amrwb` (decoder) and `vo-amrwbenc` (encoder) shared libraries through
+small harnesses in `testdata/refharness`. They **skip** unless pointed at those harnesses.
+CI runs them on amd64 and arm64.
 
 ```bash
-# Encoder: all 9 modes bit-exact vs vo-amrwbenc
-AMRWB_ENC=/path/to/enc-harness go test -run TestEncDiffAgainstCReference .
-# Decoder: bit-exact PCM vs opencore-amrwb
-AMRWB_DIFF=/path/to/dec-harness go test -run TestDiffAgainstCReference .
+# Debian/Ubuntu: the runtime libraries are enough (the harnesses declare the API).
+sudo apt-get install libopencore-amrwb0 libvo-amrwbenc0
 
-# Go-vs-C speed comparison (per-mode ns/frame, ratio, xRealtime)
-AMRWB_ENC=/path/to/enc-harness  go test -run TestEncSpeedVsCReference -v .
-AMRWB_DIFF=/path/to/dec-harness go test -run TestDecSpeedVsCReference -v .
-# or, via the Makefile (defaults to harnesses in /tmp; override as shown):
-make bench-vs-c AMRWB_ENC=/path/to/enc-harness AMRWB_DIFF=/path/to/dec-harness
+make harness   # builds testdata/refharness/bin/{amrwbdec,amrwbenc}
+make diff      # all differential tests (decoder and encoder, via the public API)
+GOFLAGS=-tags=purego make diff # the same, using the portable (non-AVX2) kernels
+make bench-vs-c                # Go-vs-C speed comparison
+# On macOS with Homebrew (brew install opencore-amr vo-amrwbenc):
+make harness AMRWB_DEC_LIBS="-L/opt/homebrew/lib -lopencore-amrwb" \
+             AMRWB_ENC_LIBS="-L/opt/homebrew/lib -lvo-amrwbenc"
 ```
 
-The encoder harness reads 320 int16 LE per frame on stdin (mode as argv[1]) and writes
-`[ToC byte][packed speech bytes]` per frame; the decoder harness reads speech bytes per
-frame on stdin and writes 320 int16 LE per frame. `AMRWB_BENCH_FRAMES` tunes the
-comparison's frame count (default 4000).
+The decoder test feeds identical streams to the public `Decoder` (both payload formats) and
+to `D_IF_decode`, and requires identical PCM. The streams cover random bits, reference-encoded
+speech from quiet to clipped, mode switches, lost frames (including bursts and a lost first
+frame) and decoder homing frames. The encoder tests compare the same speech signal and a
+two-tone signal, through the public `Encoder` with mode switches and both payload formats.
+To run a test directly, set `AMRWB_DIFF` (decoder harness) and `AMRWB_ENC` (encoder harness)
+to the built binaries. `AMRWB_BENCH_FRAMES` tunes the speed comparison's frame count
+(default 4000).
 
 ## License
 

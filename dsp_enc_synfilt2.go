@@ -45,7 +45,7 @@ func HP400_12k8(signal []int16, lg int16, mem []int16) {
 		lTmp += int32(y2Lo) * int32(hp400A[2])
 		lTmp >>= 14
 		lTmp += (int32(y1Hi)*int32(hp400A[1]) + int32(y2Hi)*int32(hp400A[2]) +
-			int32(x0+x2)*int32(hp400B[0]) + int32(x1)*int32(hp400B[1])) << 1
+			(int32(x0)+int32(x2))*int32(hp400B[0]) + int32(x1)*int32(hp400B[1])) << 1
 		lTmp <<= 1
 		y2Hi = y1Hi
 		y2Lo = y1Lo

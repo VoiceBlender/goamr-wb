@@ -37,8 +37,7 @@ func TestSortTablesArePermutations(t *testing.T) {
 func TestMimeUnsortScatters(t *testing.T) {
 	mode := int16(2) // 12.65k
 	st := sortTables[mode]
-	// Only bits in whole processed bytes are mapped (see mimeUnsort).
-	for _, k := range []int{0, 1, 50, 100, 200} {
+	for _, k := range []int{0, 1, 50, 100, 200, len(st) - 1} { // last: a tail bit
 		packed := make([]byte, (len(st)+7)/8)
 		packed[k/8] |= 1 << uint(7-k%8)
 		out := mimeUnsort(packed, mode)

@@ -26,12 +26,24 @@ func TestOpsCrossValidate16(t *testing.T) {
 	}
 }
 
+// The decoder (opencore) and encoder (vo-amrwbenc) mac/msu agree except for
+// -32768*-32768: opencore saturates that product to MAX_32, vo-amrwbenc lets
+// it wrap to MIN_32 before the saturating add.
 func TestMacMsuCrossValidate(t *testing.T) {
 	accs := []int32{min32, -1 << 20, -1, 0, 1, 1 << 20, max32}
 	vals := []int16{min16, -1, 0, 1, 16384, max16}
 	for _, acc := range accs {
+		if got, want := mac_16by16_to_int32(acc, min16, min16), add_int32(acc, max32); got != want {
+			t.Errorf("mac_16by16_to_int32(%d,min,min) = %d, want %d", acc, got, want)
+		}
+		if got, want := L_mac(acc, min16, min16), L_add(acc, min32); got != want {
+			t.Errorf("L_mac(%d,min,min) = %d, want %d", acc, got, want)
+		}
 		for _, a := range vals {
 			for _, b := range vals {
+				if a == min16 && b == min16 {
+					continue
+				}
 				if mac_16by16_to_int32(acc, a, b) != L_mac(acc, a, b) {
 					t.Errorf("mac(%d,%d,%d) mismatch: %d vs %d", acc, a, b,
 						mac_16by16_to_int32(acc, a, b), L_mac(acc, a, b))

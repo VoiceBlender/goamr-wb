@@ -15,7 +15,7 @@ func Isp_isf(isp, isf []int16, m int16) {
 		for isfAcosTable[ind] < isp[i] {
 			ind--
 		}
-		lTmp := (int32(isp[i]-isfAcosTable[ind]) * int32(isfSlope[ind])) << 1 // vo_L_mult
+		lTmp := ((int32(isp[i]) - int32(isfAcosTable[ind])) * int32(isfSlope[ind])) << 1 // vo_L_mult(vo_sub(...))
 		isf[i] = voRound(lTmp << 4)
 		isf[i] = isf[i] + int16(ind<<7) // add1
 	}
@@ -83,15 +83,16 @@ func HP50_12k8(signal []int16, lg int16, mem []int16) {
 		lTmp += int32(y1Lo) * int32(hp50A[1])
 		lTmp += int32(y2Lo) * int32(hp50A[2])
 		lTmp = L_shr(lTmp, 14)
+		// The reference uses plain int arithmetic here (x0 + x2 is not
+		// truncated to 16 bits, and the shifts do not saturate).
 		lTmp += (int32(y1Hi)*int32(hp50A[1]) + int32(y2Hi)*int32(hp50A[2]) +
-			int32(x0+x2)*int32(hp50B[0]) + int32(x1)*int32(hp50B[1])) << 1
-		lTmp = L_shl(lTmp, 2)
+			(int32(x0)+int32(x2))*int32(hp50B[0]) + int32(x1)*int32(hp50B[1])) << 1
+		lTmp <<= 2
 		y2Hi = y1Hi
 		y2Lo = y1Lo
 		y1Hi = int16(lTmp >> 16)
 		y1Lo = int16((lTmp & 0xffff) >> 1)
-		lTmp = L_shl(lTmp, 1)
-		signal[i] = extract_h(L_add(lTmp, 0x8000))
+		signal[i] = extract_h(L_add(lTmp<<1, 0x8000))
 	}
 	mem[0], mem[1] = y2Hi, y2Lo
 	mem[2], mem[3] = y1Hi, y1Lo

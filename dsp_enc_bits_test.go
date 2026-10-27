@@ -14,9 +14,8 @@ func TestParmSerialMSBFirst(t *testing.T) {
 }
 
 // Encoder packFrame must be the inverse of the decoder mimeUnsort: pack an
-// internal-order parameter array, then unsort the packed bytes; the internal
-// positions that survive the reference's (unpacked_size>>3)*8 truncation must
-// be recovered exactly.
+// internal-order parameter array, then unsort the packed bytes; every bit must
+// be recovered exactly, including the final unpacked_size%8 bits.
 func TestPackUnsortRoundTrip(t *testing.T) {
 	for mode := 0; mode <= 8; mode++ {
 		n := int(unpacked_size[mode])
@@ -33,15 +32,11 @@ func TestPackUnsortRoundTrip(t *testing.T) {
 		packed := packFrame(prms, int16(mode))
 		got := mimeUnsort(packed, int16(mode))
 
-		st := sortTables[mode]
-		nbytes := n >> 3
-		for i := 0; i < nbytes*8; i++ { // only the bits the decoder maps
-			idx := st[i]
+		for idx := 0; idx < n; idx++ {
 			gv := got[idx] == cBIT_1
 			pv := prms[idx] == cBIT_1
 			if gv != pv {
-				t.Fatalf("mode %d: internal bit %d (transmitted %d) mismatch: pack=%v unsort=%v",
-					mode, idx, i, pv, gv)
+				t.Fatalf("mode %d: internal bit %d mismatch: pack=%v unsort=%v", mode, idx, pv, gv)
 			}
 		}
 	}

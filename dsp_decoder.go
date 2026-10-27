@@ -2,7 +2,8 @@ package amrwb
 
 // Main AMR-WB decode driver, ported verbatim from the Apache-2.0 opencore-amrwb
 // reference (pvamrwbdecoder.cpp pvDecoder_AmrWb), derived from 3GPP TS 26.173.
-// Decodes one 20 ms frame (mode = internal mode index 0..8, or 9 for SID) into
+// Decodes one 20 ms frame (mode = internal mode index 0..8; for SID and lost
+// frames, the last speech mode, as in the reference wrapper) into
 // 320 PCM samples at 16 kHz.
 //
 // CNG (comfort-noise) synthesis for SID/DTX frames is not yet ported; non-speech

@@ -20,7 +20,6 @@ type Encoder struct {
 	mode         Mode
 	octetAligned bool
 	st           encoderState
-	scaled       [FrameSamples]int16
 	frameBits    [60]byte // packed speech bits of the largest mode
 }
 
@@ -41,19 +40,6 @@ func NewEncoder(cfg EncoderConfig) (*Encoder, error) {
 }
 
 // Encode encodes one 20 ms frame (320 samples) into an RTP payload.
-//
-// Input samples are halved (-6 dB) before being passed to the encoder. This
-// is a workaround for a porting defect in the encoder fixed-point path: the
-// bit stream diverges from the vo-amrwbenc reference for non-tone content at
-// input levels above roughly -12 dBFS, and when decoded the synthesised speech
-// overshoots into saturation ("loud and clipping" symptom). The reference C
-// encoder/decoder pair handles the same input cleanly up to 0 dBFS.
-//
-// The existing TestEncDiffAgainstCReference uses tone input which doesn't
-// exercise the divergent path. The bug is likely in the LPC analysis or ACELP
-// codebook search rounding; a multi-hour per-stage bisect against the C
-// reference is needed to find the exact missing saturation. Until then, the
-// -6 dB headroom keeps the decoded output below full scale.
 func (e *Encoder) Encode(samples []int16) ([]byte, error) {
 	out := make([]byte, MaxPayloadBytes)
 	n, err := e.EncodeTo(out, samples)
@@ -70,10 +56,7 @@ func (e *Encoder) EncodeTo(dst []byte, samples []int16) (int, error) {
 	if len(samples) != FrameSamples {
 		return 0, errEncodeFrameSize
 	}
-	for i, s := range samples {
-		e.scaled[i] = s >> 1
-	}
-	bits, err := e.st.encodeFrameInto(e.frameBits[:], e.mode, e.scaled[:])
+	bits, err := e.st.encodeFrameInto(e.frameBits[:], e.mode, samples)
 	if err != nil {
 		return 0, err
 	}

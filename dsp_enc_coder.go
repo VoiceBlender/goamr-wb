@@ -110,7 +110,7 @@ func (st *coderState) coder(modePtr *int16, speech16k []int16, prms []int16, all
 		st.memW0 = m2[0]
 	}
 
-	// VAD (stubbed) -> vad_flag.
+	// Voice activity detection -> vad_flag.
 	buf := make([]int16, cL_FRAME)
 	copy(buf, ns[:cL_FRAME])
 	Scale_sig(buf, cL_FRAME, 1-qNew)
@@ -402,7 +402,7 @@ func (st *coderState) coder(modePtr *int16, speech16k []int16, prms []int16, all
 		}
 
 		// Adaptive codebook excitation.
-		Pred_lt4(oldExc, excBase+iSub, T0, T0frac, cL_SUBFR+1)
+		predLt4Enc(oldExc, excBase+iSub, T0, T0frac, cL_SUBFR+1)
 		var gain1 int16
 		if serSize > cNBBITS_9k {
 			Convolve(oldExc[excBase+iSub:], h1, y1)
