@@ -115,3 +115,93 @@ func fieldOf(i int) string {
 	}
 	return "?tail"
 }
+
+// TestEncSpeechDiffAgainstCReference encodes speech-like input from quiet to
+// clipped (testSignal), and pathological input (stressSignal), with the Go
+// encoder and with vo-amrwbenc (AMRWB_ENC),
+// requiring identical frames in every mode, including the VAD flag.
+func TestEncSpeechDiffAgainstCReference(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		sig  []int16
+	}{{"speech", testSignal()}, {"stress", stressSignal()}} {
+		for mode := 0; mode <= 8; mode++ {
+			t.Run(c.name+"/"+modeNames[mode], func(t *testing.T) {
+				encCompare(t, c.sig, mode)
+			})
+		}
+	}
+}
+
+// encCompare encodes sig in mode with the Go encoder and vo-amrwbenc and
+// requires identical frames.
+func encCompare(t *testing.T, sig []int16, mode int) {
+	t.Helper()
+	ref := encodeFrames(t, sig, func(int) int { return mode })
+	var enc encoderState
+	enc.reset()
+	for f := range ref {
+		var got []byte
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("frame %d: encoder panic: %v", f, r)
+				}
+			}()
+			got, _ = enc.encodeFrame(Mode(mode), sig[f*FrameSamples:(f+1)*FrameSamples])
+		}()
+		if !bytes.Equal(got, ref[f].data) {
+			gp := mimeUnsort(got, int16(mode))
+			cp := mimeUnsort(ref[f].data, int16(mode))
+			first := -1
+			for i := range gp {
+				if (gp[i] == cBIT_1) != (cp[i] == cBIT_1) {
+					first = i
+					break
+				}
+			}
+			t.Fatalf("frame %d: diverges at internal bit %d", f, first)
+		}
+	}
+}
+
+// TestEncAPIDiffAgainstCReference drives the public Encoder (both payload
+// formats, switching modes with SetMode) and vo-amrwbenc's E_IF_encode
+// (AMRWB_ENC) with the same PCM, requiring identical frames.
+func TestEncAPIDiffAgainstCReference(t *testing.T) {
+	sig := testSignal()
+	modeOf := func(f int) int {
+		if f < 200 {
+			return 8
+		}
+		return (f / 7) % 9
+	}
+	ref := encodeFrames(t, sig, modeOf)
+	for _, octet := range []bool{true, false} {
+		enc, err := NewEncoder(EncoderConfig{Mode: Mode(modeOf(0)), OctetAligned: octet})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pp payloadParser
+		dst := make([]byte, MaxPayloadBytes)
+		for f := range ref {
+			enc.SetMode(Mode(modeOf(f)))
+			n, err := enc.EncodeTo(dst, sig[f*FrameSamples:(f+1)*FrameSamples])
+			if err != nil {
+				t.Fatalf("octet=%v frame %d: %v", octet, f, err)
+			}
+			var frames []frame
+			if octet {
+				frames, err = pp.parseOctet(dst[:n])
+			} else {
+				frames, err = pp.parseBandwidthEfficient(dst[:n])
+			}
+			if err != nil || len(frames) != 1 {
+				t.Fatalf("octet=%v frame %d: parse: %d frames, %v", octet, f, len(frames), err)
+			}
+			if frames[0].ft != ref[f].ft || !bytes.Equal(frames[0].data, ref[f].data) {
+				t.Fatalf("octet=%v frame %d (mode %d): differs from the reference", octet, f, modeOf(f))
+			}
+		}
+	}
+}

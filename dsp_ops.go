@@ -160,8 +160,11 @@ func shr_int16(var1, var2 int16) int16 { return shl_int16(var1, -var2) }
 func shl_int32(lVar1 int32, var2 int16) int32 {
 	var lOut int32
 	if var2 > 0 {
-		lOut = int32(int64(lVar1) << uint(var2))
-		if lOut>>uint(var2) != lVar1 {
+		// The reference shifts by var2 directly; for var2 >= 32 that is
+		// undefined in C, and x86-64 and arm64 take the count modulo 32.
+		sh := uint(var2) & 31
+		lOut = lVar1 << sh
+		if lOut>>sh != lVar1 {
 			lOut = (lVar1 >> 31) ^ max32
 		}
 	} else {

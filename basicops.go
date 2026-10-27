@@ -156,11 +156,14 @@ func L_add(a, b int32) int32 { return satWord32(int64(a) + int64(b)) }
 // L_sub returns the saturated 32-bit difference.
 func L_sub(a, b int32) int32 { return satWord32(int64(a) - int64(b)) }
 
-// L_mac returns acc + (a*b<<1), saturated.
-func L_mac(acc int32, a, b int16) int32 { return L_add(acc, L_mult(a, b)) }
+// L_mac returns acc + (a*b<<1) with a saturated sum. As in vo-amrwbenc's
+// basic_op.h (unlike ITU L_mac), the product itself is not saturated:
+// -32768*-32768<<1 wraps to MIN_32.
+func L_mac(acc int32, a, b int16) int32 { return L_add(acc, (int32(a)*int32(b))<<1) }
 
-// L_msu returns acc - (a*b<<1), saturated.
-func L_msu(acc int32, a, b int16) int32 { return L_sub(acc, L_mult(a, b)) }
+// L_msu returns acc - (a*b<<1) with a saturated difference; the product wraps
+// as in L_mac.
+func L_msu(acc int32, a, b int16) int32 { return L_sub(acc, (int32(a)*int32(b))<<1) }
 
 // negate returns the saturated 16-bit negation.
 func negate(a int16) int16 {

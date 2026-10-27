@@ -139,20 +139,7 @@ func Deemph2(x []int16, mu, L int16, mem *int16) {
 	*mem = x[L-1]
 }
 
-// --- VAD / DTX encode stubs (non-DTX speech path) ---
-
-// vadState is a placeholder for the wb_vad analysis state. The full VAD is not
-// yet ported; wbVad returns voice-active so the (decoder-ignored) vad_flag bit
-// is deterministic. This is NOT bit-exact to the reference VAD.
-type vadState struct{}
-
-func (v *vadState) reset() {}
-
-// wbVad returns 1 (voice active) as a placeholder.
-func wbVad(v *vadState, buf []int16) int16 { return 1 }
-
-// wbVadToneDetection is a no-op placeholder.
-func wbVadToneDetection(v *vadState, olGain int16) {}
+// --- DTX encode stub (non-DTX speech path) ---
 
 // dtxEncState is a placeholder for the DTX encoder state. Only the field the
 // non-DTX synthesis path reads (dtxHangoverCount) is modelled; init to >6 so

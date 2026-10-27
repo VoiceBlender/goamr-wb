@@ -521,11 +521,17 @@ func ACELP_4t64_fx(dn, cn, h, code, y []int16, nbbits, serSize int16, index []in
 			code[i] -= pulseVal
 			idx += cNB_POS
 		}
+		// The search can select the same position more than once, so a track
+		// may get more than NPMAXPT pulses. The reference then scans past the
+		// end of ind[] and stores the index outside it, where nothing reads it;
+		// dropping the store matches that instead of indexing out of range.
 		ii := int(track) * cNPMAXPT
-		for ind[ii] >= 0 {
+		for ii < len(ind) && ind[ii] >= 0 {
 			ii++
 		}
-		ind[ii] = idx
+		if ii < len(ind) {
+			ind[ii] = idx
+		}
 	}
 
 	k := 0

@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// AMR-WB's LPC synthesis filter can overshoot the input envelope by several dB
-// on voiced content, producing decoded samples that saturate at ±32767. To
-// keep callers from having to second-guess input scaling, the encoder applies
-// 6 dB of pre-attenuation. This test guards the resulting end-to-end behavior:
-// realistic speech-band content at peak -3 dBFS roundtrips without clipping.
+// Loud input must roundtrip without saturating the decoded output. Earlier,
+// overflow handling in the encoder diverged from vo-amrwbenc on loud input and
+// the decoded speech overshot into saturation (worked around by halving the
+// input). This guards against that regression: realistic speech-band content
+// at peak -3 dBFS roundtrips without clipping, with no input attenuation.
 func TestEncoderHeadroomPreventsDecoderSaturation(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 

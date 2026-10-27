@@ -28,10 +28,8 @@ func (s *encoderState) reset() {
 // RFC 4867 frame payload bytes (the sorted/packed speech bits, without the
 // CMR/ToC header which the caller adds).
 //
-// All nine speech modes (6.60-23.85 kbit/s) are bit-exact against the
-// vo-amrwbenc reference for active speech (see TestEncDiffAgainstCReference).
-// The VAD is stubbed to always-active, so the vad_flag bit and DTX/SID encoding
-// are not reference-accurate on silence/noise; the decoder ignores vad_flag.
+// Bit-exactness against vo-amrwbenc is checked by TestEncDiffAgainstCReference
+// and TestEncSpeechDiffAgainstCReference. DTX/SID encoding is not ported.
 func (s *encoderState) encodeFrame(mode Mode, samples []int16) ([]byte, error) {
 	out := make([]byte, packed_size[mode])
 	return s.encodeFrameInto(out, mode, samples)
@@ -60,28 +58,28 @@ func (s *encoderState) encodeFrameInto(dst []byte, mode Mode, samples []int16) (
 	return packFrameInto(dst, prms, int16(mode)), nil
 }
 
-// decoderState holds the persistent decoder synthesis state across frames.
+// decoderState holds the persistent decoder synthesis state across frames,
+// plus the frame-handling state of the reference D_IF_decode wrapper.
 type decoderState struct {
-	dsp      decoderStateDSP
-	lastMode Mode
-	started  bool
-	params   [cNBBITS_24k]int16 // de-sorted parameter scratch, reused per frame
+	dsp          decoderStateDSP
+	prevMode     Mode // last mode decoded; reused for SID/SPEECH_LOST/NO_DATA
+	resetFlag    bool // current frame is a decoder homing frame
+	resetFlagOld bool // previous frame was a decoder homing frame (or fresh state)
+	started      bool
+	params       [cNBBITS_24k]int16 // de-sorted parameter scratch, reused per frame
 }
 
 func (s *decoderState) reset() {
 	s.dsp.reset(true)
-	s.lastMode = Mode2385
+	s.prevMode = Mode0660
+	s.resetFlag = false
+	s.resetFlagOld = true
 	s.started = true
 }
 
 // decodeFrame decodes one parsed AMR-WB frame into 320 PCM samples. Speech
 // frames are fully decoded; SID/NO_DATA/SPEECH_LOST currently emit silence /
 // concealment (CNG synthesis not yet ported).
-//
-// NOTE: the speech bits are expanded MSB-first directly into the decoder's
-// parameter order. AMR-WB's RTP payload bit order (RFC 4867) must match the
-// reference Serial_parm order; this is validated against the 3GPP TS 26.174
-// test vectors before AMR-WB is offered in SDP.
 func (s *decoderState) decodeFrame(f frame) ([]int16, error) {
 	synth := make([]int16, cAMR_WB_PCM_FRAME)
 	if err := s.decodeFrameInto(f, synth); err != nil {
@@ -92,50 +90,78 @@ func (s *decoderState) decodeFrame(f frame) ([]int16, error) {
 
 // decodeFrameInto is decodeFrame writing the 320 samples into synth, which
 // must hold at least cAMR_WB_PCM_FRAME samples. It does not allocate.
+//
+// It mirrors D_IF_decode (opencore-amrwb wrapper.cpp) and mime_unsorting
+// (mime_io.cpp): decoder homing frames, 14-bit output, and the mode used for
+// frames without speech bits. One deliberate difference: the reference wrapper
+// ignores the ToC Q bit, while this decoder treats Q=0 frames as bad frames
+// (RFC 4867, section 4.3.2).
 func (s *decoderState) decodeFrameInto(f frame, synth []int16) error {
 	if !s.started {
 		s.reset()
 	}
 	synth = synth[:cAMR_WB_PCM_FRAME]
 
-	var mode Mode
+	// Frames without bits leave the parameter buffer as it was, as in the
+	// reference; the concealment paths do not use those values.
+	params := s.params[:]
+	mode := s.prevMode
 	var frameType int16
 	switch {
 	case f.ft <= FTMode2385: // speech
 		mode = Mode(f.ft)
-		s.lastMode = mode
+		mimeUnsortInto(params, f.data, int16(mode))
 		if f.q {
 			frameType = cRX_SPEECH_GOOD
 		} else {
 			frameType = cRX_SPEECH_BAD
 		}
 	case f.ft == FTSID:
-		mode = Mode(dMRDTX)
-		frameType = cRX_SID_UPDATE
+		mimeUnsortInto(params, f.data, int16(dMRDTX))
+		switch {
+		case !f.q:
+			frameType = cRX_SID_BAD
+		case len(f.data) > 4 && f.data[4]&0x10 != 0: // STI bit
+			frameType = cRX_SID_UPDATE
+		default:
+			frameType = cRX_SID_FIRST
+		}
 	case f.ft == FTSpeechLost:
-		mode = s.lastMode
 		frameType = cRX_SPEECH_LOST
 	default: // FTNoData and anything else
-		mode = s.lastMode
 		frameType = cRX_NO_DATA
 	}
+	s.prevMode = mode
 
-	// Build the per-bit parameter array via RFC 4867 de-sorting. For frames
-	// without usable bits, a zero-filled array keeps the bit cursor in sync
-	// (values are ignored by the concealment paths).
-	var params []int16
-	switch frameType {
-	case cRX_SPEECH_GOOD, cRX_SPEECH_BAD:
-		params = mimeUnsortInto(s.params[:], f.data, int16(mode))
-	case cRX_SID_UPDATE:
-		params = mimeUnsortInto(s.params[:], f.data, int16(dMRDTX))
-	default:
-		params = s.params[:amrwbCompressed[mode]]
-		for i := range params {
-			params[i] = 0
-		}
+	if frameType == cRX_NO_DATA || frameType == cRX_SPEECH_LOST {
+		s.resetFlag = false
+	} else if s.resetFlagOld {
+		// Homed: check whether this frame is another homing frame (first
+		// subframe only).
+		s.resetFlag = homingFrameTestFirst(params, int16(mode))
 	}
 
-	s.dsp.decodeAmrWb(int16(mode), params, frameType, synth)
+	if s.resetFlag && s.resetFlagOld {
+		// Homed and still receiving homing frames: output the encoder homing
+		// frame without decoding.
+		for i := range synth {
+			synth[i] = cEHF_MASK
+		}
+	} else {
+		s.dsp.decodeAmrWb(int16(mode), params, frameType, synth)
+	}
+
+	for i := range synth { // delete the 2 LSBs (14-bit output)
+		synth[i] &^= 3
+	}
+
+	if !s.resetFlagOld {
+		// Not homed: check whether the whole frame is a homing frame.
+		s.resetFlag = homingFrameTest(params, int16(mode))
+	}
+	if s.resetFlag {
+		s.dsp.reset(true)
+	}
+	s.resetFlagOld = s.resetFlag
 	return nil
 }

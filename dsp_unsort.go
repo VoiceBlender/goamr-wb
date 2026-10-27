@@ -13,12 +13,9 @@ var sortTables = [10][]int16{
 // mimeUnsort converts a packed (octet-aligned, MSB-first) frame for the given
 // internal mode index into the per-bit parameter array consumed by the decoder.
 //
-// This replicates mime_unsorting (mime_io.cpp) exactly: it processes
-// (unpacked_size>>3) whole bytes — 8 bits each, MSB-first — scattering each
-// transmitted bit k to internal index sortTable[k]. (The reference's trailing
-// %4 handler is a no-op because its working byte is already fully consumed, so
-// the final unpacked_size%8 bits are not mapped; matching that is required for
-// bit-exactness with the de-facto reference decoder.)
+// This replicates mime_unsorting (mime_io.cpp): it processes (unpacked_size>>3)
+// whole bytes, then the remaining unpacked_size%8 bits of the next byte, all
+// MSB-first, scattering each transmitted bit k to internal index sortTable[k].
 func mimeUnsort(packed []byte, mode int16) []int16 {
 	if mode < 0 || int(mode) >= len(unpacked_size) {
 		return nil
@@ -45,6 +42,17 @@ func mimeUnsortInto(out []int16, packed []byte, mode int16) []int16 {
 	for b := 0; b < nbytes && b < len(packed); b++ {
 		temp := packed[b]
 		for range 8 {
+			if temp&0x80 != 0 {
+				out[st[k]] = cBIT_1
+			}
+			temp <<= 1
+			k++
+		}
+	}
+	// Convert the remaining 0 to 7 bits.
+	if rem := int(unpacked_size[mode]) & 7; rem != 0 && nbytes < len(packed) {
+		temp := packed[nbytes]
+		for range rem {
 			if temp&0x80 != 0 {
 				out[st[k]] = cBIT_1
 			}

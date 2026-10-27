@@ -209,12 +209,16 @@ func voice_factor(exc []int16, qExc, gainPit int16, code []int16, gainCode, lSub
 	ener2 = mult_int16(ener2, tmp)
 	exp2 -= e << 1
 
+	// The reference shifts the int-promoted energies by a count that can reach
+	// 32 or more (e.g. after a zero-gain concealed frame). That is undefined in
+	// C; x86-64 and arm64 take the count modulo 32, and matching that keeps the
+	// output bit-exact with opencore-amrwb.
 	i := exp1 - exp2
 	if i >= 0 {
 		ener1 >>= 1
-		ener2 >>= uint(i + 1)
+		ener2 = int16(int32(ener2) >> uint((i+1)&31))
 	} else {
-		ener1 >>= uint(1 - i)
+		ener1 = int16(int32(ener1) >> uint((1-i)&31))
 		ener2 >>= 1
 	}
 

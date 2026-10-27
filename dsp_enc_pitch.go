@@ -53,6 +53,31 @@ func gpClipTestGainPit(gainPit int16, mem []int16) {
 	mem[1] = gain
 }
 
+// predLt4Enc computes the adaptive-codebook excitation by fractional-delay
+// interpolation, as vo-amrwbenc's Pred_lt4 (pred_lt4.c). It differs from the
+// decoder's Pred_lt4 (opencore) only in the output conversion: this one
+// saturates (L_shl2, L_add) where the decoder's wraps, which matters once the
+// excitation is large (e.g. clipped input).
+func predLt4Enc(exc []int16, off int, T0, frac, lSubfr int16) {
+	ptBase := off - int(T0)
+	frac = -frac
+	if frac < 0 {
+		frac += cUP_SAMP
+		ptBase--
+	}
+	ptBase -= cL_INTERPOL2 - 1
+	pt := inter4_2[cUP_SAMP-1-frac][:]
+
+	// The products are summed in a wrapping int32 (vo_mult32), so firDot's
+	// lane-parallel sum is identical; outputs are written in increasing order
+	// and every read index precedes the output being computed.
+	const taps = 2 * cL_INTERPOL2
+	for m := 0; m < int(lSubfr); m++ {
+		s := firDot(exc[ptBase+m:ptBase+m+taps], pt)
+		exc[off+m] = extract_h(L_add(lShl2(s, 2), 0x8000))
+	}
+}
+
 // Updt_tar updates the target vector: x2 = x - gain*y (Updt_tar).
 func Updt_tar(x, x2, y []int16, gain, L int16) {
 	for i := 0; i < int(L); i++ {
