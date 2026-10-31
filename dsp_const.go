@@ -66,6 +66,11 @@ const (
 	cRX_SID_UPDATE               = 5
 	cRX_SID_BAD                  = 6
 	cRX_NO_DATA                  = 7
+
+	cTX_SPEECH     = 0
+	cTX_SID_FIRST  = 1
+	cTX_SID_UPDATE = 2
+	cTX_NO_DATA    = 3
 )
 
 // AMR-WB mode indices used internally by the DSP (pvamrwbdecoder_cnst.h).

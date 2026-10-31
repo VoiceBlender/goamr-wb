@@ -17,7 +17,7 @@ func (st *coderState) synthesis(aq, exc []int16, qNew int16, synth16k []int16) i
 	// Speech synthesis at 12.8 kHz, fixed deemphasis and 50 Hz HP filtering.
 	copy(synthHi[:cM], st.memSynHi[:])
 	copy(synthLo[:cM], st.memSynLo[:])
-	Syn_filt_32(aq, cM, exc, qNew, synthHi, synthLo, cM, cL_SUBFR)
+	encSynFilt32(aq, exc, qNew, synthHi, synthLo, cM, cL_SUBFR)
 	copy(st.memSynHi[:], synthHi[cL_SUBFR:cL_SUBFR+cM])
 	copy(st.memSynLo[:], synthLo[cL_SUBFR:cL_SUBFR+cM])
 	Deemph_32(synthHi[cM:], synthLo[cM:], synth, cPREEMPH_FAC, cL_SUBFR, &st.memDeemph)

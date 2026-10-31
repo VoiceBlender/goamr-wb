@@ -5,10 +5,6 @@ package amrwb
 // Decodes one 20 ms frame (mode = internal mode index 0..8; for SID and lost
 // frames, the last speech mode, as in the reference wrapper) into
 // 320 PCM samples at 16 kHz.
-//
-// CNG (comfort-noise) synthesis for SID/DTX frames is not yet ported; non-speech
-// states currently emit silence. Speech (and erased-speech concealment) frames
-// are fully decoded.
 
 const cExcBase = cPIT_MAX + cL_INTERPOL // 248: excitation history length
 
@@ -18,7 +14,16 @@ func (st *decoderStateDSP) decodeAmrWb(mode int16, params []int16, frameType int
 	p := &bitParser{bits: params}
 	nbBits := amrwbCompressed[mode]
 
+	isf := make([]int16, cM)
+	ispnew := make([]int16, cM)
+	isfTmp := make([]int16, cM)
+
 	newDTXState := rxDtxHandler(&st.dtxDecSt, frameType)
+
+	var cngExc [cL_FRAME]int16
+	if newDTXState != cSPEECH {
+		st.dtxDecSt.decode(cngExc[:], newDTXState, isf, p)
+	}
 
 	var bfi, unusableFrame int16
 	switch frameType {
@@ -57,17 +62,28 @@ func (st *decoderStateDSP) decodeAmrWb(mode int16, params []int16, frameType int
 		}
 	}
 
-	isf := make([]int16, cM)
-	ispnew := make([]int16, cM)
-	isfTmp := make([]int16, cM)
+	if newDTXState != cSPEECH { // CNG mode
+		Isf_isp(isf, ispnew, cM)
+		aq := make([]int16, cM+1)
+		Isp_Az(ispnew, aq, cM, 1)
 
-	if newDTXState != cSPEECH {
-		// CNG/DTX comfort-noise synthesis is not yet ported: emit silence and
-		// keep speech memories reset so the next speech frame restarts cleanly.
-		for i := range synth16k[:cAMR_WB_PCM_FRAME] {
-			synth16k[i] = 0
+		copy(isfTmp, st.isfold[:])
+		hfIsf := make([]int16, cM16k)
+		for iSubfr := 0; iSubfr < cL_FRAME; iSubfr += cL_SUBFR {
+			j := iSubfr >> 6
+			for i := 0; i < cM; i++ {
+				lTmp := mul_16by16_to_int32(isfTmp[i], sub_int16(32767, interpolFrac[j]))
+				lTmp = mac_16by16_to_int32(lTmp, isf[i], interpolFrac[j])
+				hfIsf[i] = amr_wb_round(lTmp)
+			}
+			synthesisAmrWb(aq, cngExc[iSubfr:], 0, synth16k[iSubfr+(iSubfr>>2):],
+				1, hfIsf, nbBits, newDTXState, st, bfi)
 		}
+
+		// Reset speech coder memories.
 		st.reset(false)
+		copy(st.isfold[:], isf)
+
 		st.prevBfi = bfi
 		st.dtxDecSt.dtxGlobalState = newDTXState
 		return

@@ -2,8 +2,7 @@ package amrwb
 
 // Encoder state and small driver helpers, ported from the Apache-2.0
 // vo-amrwbenc reference (cod_main.h, voAMRWBEnc.c Reset_encoder, deemph.c
-// Deemph2), derived from 3GPP TS 26.190. VAD and DTX encode are stubbed for the
-// initial (non-DTX) encode path; their full ports are tracked separately.
+// Deemph2), derived from 3GPP TS 26.190.
 
 const cOLD_HP_WSP = cL_FRAME/cOPL_DECIM + cPIT_MAX/cOPL_DECIM // 243
 
@@ -138,14 +137,3 @@ func Deemph2(x []int16, mu, L int16, mem *int16) {
 	}
 	*mem = x[L-1]
 }
-
-// --- DTX encode stub (non-DTX speech path) ---
-
-// dtxEncState is a placeholder for the DTX encoder state. Only the field the
-// non-DTX synthesis path reads (dtxHangoverCount) is modelled; init to >6 so
-// gain_alpha resolves to its non-DTX steady state.
-type dtxEncState struct {
-	dtxHangoverCount int16
-}
-
-func (d *dtxEncState) reset(isfInit []int16) { d.dtxHangoverCount = 7 }

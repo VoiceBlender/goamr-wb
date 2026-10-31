@@ -20,6 +20,8 @@ type Encoder struct {
 	mode         Mode
 	octetAligned bool
 	st           encoderState
+	lastFT       int      // frame type of the last encoded frame
+	talkspurt    bool     // the last encoded frame starts a talkspurt
 	frameBits    [60]byte // packed speech bits of the largest mode
 }
 
@@ -27,6 +29,11 @@ type Encoder struct {
 type EncoderConfig struct {
 	Mode         Mode // active speech mode (0..8)
 	OctetAligned bool // true: octet-aligned framing; false: bandwidth-efficient
+
+	// DTX enables discontinuous transmission: non-speech frames are coded as
+	// SID frames or, between SID updates, as NO_DATA frames, which Encode and
+	// EncodeTo report as an empty payload.
+	DTX bool
 }
 
 // NewEncoder creates an AMR-WB encoder for the given mode and payload format.
@@ -34,12 +41,15 @@ func NewEncoder(cfg EncoderConfig) (*Encoder, error) {
 	if !cfg.Mode.Valid() {
 		return nil, errors.New("amrwb: invalid encoder mode")
 	}
-	e := &Encoder{mode: cfg.Mode, octetAligned: cfg.OctetAligned}
+	e := &Encoder{mode: cfg.Mode, octetAligned: cfg.OctetAligned, lastFT: FTNoData}
+	e.st.dtx = cfg.DTX
 	e.st.reset()
 	return e, nil
 }
 
-// Encode encodes one 20 ms frame (320 samples) into an RTP payload.
+// Encode encodes one 20 ms frame (320 samples) into an RTP payload. With DTX on
+// the payload is empty for a NO_DATA frame: send nothing (RFC 4867, section
+// 4.3.2), but still advance the RTP timestamp by 320.
 func (e *Encoder) Encode(samples []int16) ([]byte, error) {
 	out := make([]byte, MaxPayloadBytes)
 	n, err := e.EncodeTo(out, samples)
@@ -51,16 +61,20 @@ func (e *Encoder) Encode(samples []int16) ([]byte, error) {
 
 // EncodeTo is Encode writing the RTP payload into dst, which must hold at
 // least MaxPayloadBytes bytes (or the payload size of the active mode). It
-// returns the payload length and does not allocate.
+// returns the payload length, 0 for a NO_DATA frame, and does not allocate.
 func (e *Encoder) EncodeTo(dst []byte, samples []int16) (int, error) {
 	if len(samples) != FrameSamples {
 		return 0, errEncodeFrameSize
 	}
-	bits, err := e.st.encodeFrameInto(e.frameBits[:], e.mode, samples)
+	f, err := e.st.encodeFrameInto(e.frameBits[:], e.mode, samples)
 	if err != nil {
 		return 0, err
 	}
-	f := frame{ft: e.mode.FrameType(), q: true, data: bits}
+	e.talkspurt = f.ft <= FTMode2385 && e.lastFT > FTMode2385
+	e.lastFT = f.ft
+	if f.ft == FTNoData {
+		return 0, nil
+	}
 	var (
 		n  int
 		ok bool
@@ -83,8 +97,17 @@ func (e *Encoder) SetMode(m Mode) {
 	}
 }
 
+// Talkspurt reports whether the last encoded frame is speech and is either the
+// first frame or the first after SID/NO_DATA frames, so that the RTP marker bit
+// of its packet must be set (RFC 4867, section 4.1).
+func (e *Encoder) Talkspurt() bool { return e.talkspurt }
+
 // Reset clears all encoder state.
-func (e *Encoder) Reset() { e.st.reset() }
+func (e *Encoder) Reset() {
+	e.st.reset()
+	e.lastFT = FTNoData
+	e.talkspurt = false
+}
 
 // Decoder decodes AMR-WB RFC 4867 RTP payloads into 16 kHz mono PCM.
 type Decoder struct {
@@ -136,6 +159,21 @@ func (d *Decoder) DecodeTo(dst []int16, payload []byte) (int, error) {
 		return 0, err
 	}
 	return n, nil
+}
+
+// DecodeNoData writes one frame (320 samples) to dst for a 20 ms interval
+// without a packet. Receivers must call it for every such interval, because DTX
+// senders transmit nothing between SID updates: it produces comfort noise while
+// in DTX, and concealment otherwise. It returns the number of samples written
+// and does not allocate.
+func (d *Decoder) DecodeNoData(dst []int16) (int, error) {
+	if len(dst) < FrameSamples {
+		return 0, errShortDst
+	}
+	if err := d.st.decodeFrameInto(frame{ft: FTNoData, q: true}, dst[:FrameSamples]); err != nil {
+		return 0, err
+	}
+	return FrameSamples, nil
 }
 
 func (d *Decoder) parse(payload []byte) ([]frame, error) {

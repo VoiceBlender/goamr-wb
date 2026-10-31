@@ -24,6 +24,59 @@ func (w *paramWriter) parm(value, noOfBits int16) {
 	}
 }
 
+// txState is the frame-type state of PackBits, kept apart from coderState
+// because Reset_encoder does not clear it. sid_handover_debt is left out: the
+// reference never sets it.
+type txState struct {
+	sidUpdateCounter int16
+	prevFt           int16
+}
+
+func (st *txState) reset() {
+	st.sidUpdateCounter = 3
+	st.prevFt = cTX_SPEECH
+}
+
+// frameType returns the TX_* type of a frame coded in codingMode (PackBits).
+func (st *txState) frameType(codingMode int16) int16 {
+	var ft int16
+	if codingMode == dMRDTX {
+		st.sidUpdateCounter--
+		switch {
+		case st.prevFt == cTX_SPEECH:
+			ft = cTX_SID_FIRST
+			st.sidUpdateCounter = 3
+		case st.sidUpdateCounter == 0:
+			ft = cTX_SID_UPDATE
+			st.sidUpdateCounter = 8
+		default:
+			ft = cTX_NO_DATA
+		}
+	} else {
+		st.sidUpdateCounter = 8
+		ft = cTX_SPEECH
+	}
+	st.prevFt = ft
+	return ft
+}
+
+// packSIDInto packs a SID frame into out, which must hold at least
+// packed_size[dMRDTX] bytes: the 35 parameter bits (zero for SID_FIRST), the
+// SID type indication and the speech mode (PackBits).
+func packSIDInto(out []byte, prms []int16, txType, mode int16) []byte {
+	if txType == cTX_SID_FIRST {
+		for i := range prms[:cNBBITS_SID] {
+			prms[i] = cBIT_0
+		}
+	}
+	out = packFrameInto(out, prms, dMRDTX)
+	if txType == cTX_SID_UPDATE {
+		out[4] |= 0x10
+	}
+	out[4] |= byte(mode & 0x000F)
+	return out
+}
+
 // packFrame packs internal-order parameter bits prms into the octet-aligned
 // frame payload for the given internal mode index (PackBits, speech path).
 func packFrame(prms []int16, mode int16) []byte {

@@ -205,3 +205,78 @@ func TestEncAPIDiffAgainstCReference(t *testing.T) {
 		}
 	}
 }
+
+// TestEncDTXDiffAgainstCReference drives the public Encoder with DTX on (both
+// payload formats) and vo-amrwbenc's E_IF_encode (AMRWB_ENC) with the same PCM,
+// requiring identical frames: speech, SID_FIRST, SID_UPDATE, and an empty
+// payload where the reference emits NO_DATA.
+func TestEncDTXDiffAgainstCReference(t *testing.T) {
+	for mode := 0; mode <= 8; mode++ {
+		t.Run("dtx/"+modeNames[mode], func(t *testing.T) {
+			checkDTXCoverage(t, encodeFrames(t, dtxSignal(), func(int) int { return mode | dtxFlag }))
+			encDTXCompare(t, dtxSignal(), func(int) int { return mode | dtxFlag })
+		})
+		t.Run("speech/"+modeNames[mode], func(t *testing.T) {
+			encDTXCompare(t, testSignal(), func(int) int { return mode | dtxFlag })
+		})
+		t.Run("stress/"+modeNames[mode], func(t *testing.T) {
+			encDTXCompare(t, stressSignal(), func(int) int { return mode | dtxFlag })
+		})
+	}
+	t.Run("modeswitch", func(t *testing.T) {
+		encDTXCompare(t, dtxSignal(), func(f int) int { return (f/7)%9 | dtxFlag })
+	})
+	t.Run("toggle", func(t *testing.T) {
+		encDTXCompare(t, dtxSignal(), func(f int) int {
+			if (f/90)%2 == 0 {
+				return 2 | dtxFlag
+			}
+			return 2
+		})
+	})
+}
+
+// encDTXCompare encodes sig with the public Encoder and vo-amrwbenc, choosing
+// each frame's mode and DTX flag with modeOf, and requires identical frames.
+func encDTXCompare(t *testing.T, sig []int16, modeOf func(frame int) int) {
+	t.Helper()
+	ref := encodeFrames(t, sig, modeOf)
+	for _, octet := range []bool{true, false} {
+		enc, err := NewEncoder(EncoderConfig{Mode: Mode(modeOf(0) &^ dtxFlag), OctetAligned: octet})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pp payloadParser
+		dst := make([]byte, MaxPayloadBytes)
+		for f := range ref {
+			enc.SetMode(Mode(modeOf(f) &^ dtxFlag))
+			enc.st.dtx = modeOf(f)&dtxFlag != 0
+			n, err := enc.EncodeTo(dst, sig[f*FrameSamples:(f+1)*FrameSamples])
+			if err != nil {
+				t.Fatalf("octet=%v frame %d: %v", octet, f, err)
+			}
+			if wantStart := ref[f].ft <= FTMode2385 && (f == 0 || ref[f-1].ft > FTMode2385); enc.Talkspurt() != wantStart {
+				t.Fatalf("octet=%v frame %d (ft %d): Talkspurt = %v", octet, f, ref[f].ft, enc.Talkspurt())
+			}
+			if ref[f].ft == FTNoData {
+				if n != 0 {
+					t.Fatalf("octet=%v frame %d: %d bytes where the reference has NO_DATA", octet, f, n)
+				}
+				continue
+			}
+			var frames []frame
+			if octet {
+				frames, err = pp.parseOctet(dst[:n])
+			} else {
+				frames, err = pp.parseBandwidthEfficient(dst[:n])
+			}
+			if err != nil || len(frames) != 1 {
+				t.Fatalf("octet=%v frame %d: parse: %d frames, %v", octet, f, len(frames), err)
+			}
+			if frames[0].ft != ref[f].ft || !bytes.Equal(frames[0].data, ref[f].data) {
+				t.Fatalf("octet=%v frame %d: ft %d (want %d), data %x (want %x)",
+					octet, f, frames[0].ft, ref[f].ft, frames[0].data, ref[f].data)
+			}
+		}
+	}
+}

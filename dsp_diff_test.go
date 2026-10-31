@@ -21,9 +21,8 @@ type refFrame struct {
 // library (D_IF_decode), requiring identical PCM. Set AMRWB_DIFF to the
 // harness built by `make harness` (testdata/refharness/amrwbdec.c).
 //
-// Not covered: SID frames (comfort-noise synthesis is not ported) and Q=0
-// frames (the reference wrapper ignores the Q bit; this decoder treats such
-// frames as bad, per RFC 4867).
+// Not covered: Q=0 frames (the reference wrapper ignores the Q bit; this decoder
+// treats such frames as bad, per RFC 4867).
 func TestDiffAgainstCReference(t *testing.T) {
 	bin := os.Getenv("AMRWB_DIFF")
 	if bin == "" {
@@ -46,6 +45,18 @@ func TestDiffAgainstCReference(t *testing.T) {
 		t.Run("stress/"+modeNames[mode], func(t *testing.T) {
 			compareWithRef(t, bin, encodeFrames(t, stressSignal(), func(int) int { return mode }))
 		})
+		t.Run("dtx/"+modeNames[mode], func(t *testing.T) {
+			compareWithRef(t, bin, dtxFrames(t, func(int) int { return mode }))
+		})
+		t.Run("dtx-lost/"+modeNames[mode], func(t *testing.T) {
+			compareWithRef(t, bin, dropFrames(dtxFrames(t, func(int) int { return mode }), uint32(mode)))
+		})
+		t.Run("dtx-mute/"+modeNames[mode], func(t *testing.T) {
+			compareWithRef(t, bin, starveSID(dtxFrames(t, func(int) int { return mode })))
+		})
+		t.Run("sid-scenarios/"+modeNames[mode], func(t *testing.T) {
+			compareWithRef(t, bin, sidScenarios(t, mode))
+		})
 	}
 	t.Run("modeswitch", func(t *testing.T) {
 		seed := uint32(99)
@@ -58,6 +69,9 @@ func TestDiffAgainstCReference(t *testing.T) {
 	})
 	t.Run("modeswitch-lost", func(t *testing.T) {
 		compareWithRef(t, bin, dropFrames(encodeFrames(t, testSignal(), func(f int) int { return (f / 7) % 9 }), 7))
+	})
+	t.Run("modeswitch-dtx", func(t *testing.T) {
+		compareWithRef(t, bin, dtxFrames(t, func(f int) int { return (f / 7) % 9 }))
 	})
 }
 
