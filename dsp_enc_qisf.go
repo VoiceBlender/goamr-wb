@@ -1,9 +1,9 @@
 package amrwb
 
 // ISF quantization (encode side), ported verbatim from the Apache-2.0
-// vo-amrwbenc reference (qpisf_2s.c), derived from 3GPP TS 26.190. Reuses the
-// dico_* codebooks (tables_isf.go) and the decoder dequantizers Dpisf_2s_46b/
-// 36b for the predictive reconstruction.
+// vo-amrwbenc reference (qpisf_2s.c, qisf_ns.c), derived from 3GPP TS 26.190.
+// Reuses the dico_* codebooks (tables_isf.go) and the decoder dequantizers
+// Dpisf_2s_46b/36b for the predictive reconstruction.
 
 const (
 	cN_SURV_MAX = 4
@@ -19,6 +19,12 @@ const (
 	cSIZE_BK21_36b = 128
 	cSIZE_BK22_36b = 128
 	cSIZE_BK23_36b = 64
+
+	cSIZE_BK_NOISE1 = 64
+	cSIZE_BK_NOISE2 = 64
+	cSIZE_BK_NOISE3 = 64
+	cSIZE_BK_NOISE4 = 32
+	cSIZE_BK_NOISE5 = 32
 )
 
 // vqStage1 finds the `surv` best first-stage codebook entries (VQ_stage1).
@@ -71,6 +77,22 @@ func subVQ(x, dico []int16, dim, dicoSize int16, distance *int32) int16 {
 		x[j] = dico[index*dim+j]
 	}
 	return index
+}
+
+// Qisf_ns quantizes the comfort-noise ISF vector, writing 5 indices (Qisf_ns).
+func Qisf_ns(isf1, isfQ, indice []int16) {
+	for i := 0; i < cORDER; i++ {
+		isfQ[i] = sub(isf1[i], mean_isf_noise[i])
+	}
+
+	var tmp int32
+	indice[0] = subVQ(isfQ[0:], dico1_isf_noise, 2, cSIZE_BK_NOISE1, &tmp)
+	indice[1] = subVQ(isfQ[2:], dico2_isf_noise, 3, cSIZE_BK_NOISE2, &tmp)
+	indice[2] = subVQ(isfQ[5:], dico3_isf_noise, 3, cSIZE_BK_NOISE3, &tmp)
+	indice[3] = subVQ(isfQ[8:], dico4_isf_noise, 4, cSIZE_BK_NOISE4, &tmp)
+	indice[4] = subVQ(isfQ[12:], dico5_isf_noise, 4, cSIZE_BK_NOISE5, &tmp)
+
+	Disf_ns(indice, isfQ)
 }
 
 // Qpisf_2s_46b quantizes the ISF vector (46-bit, modes 12k+), writing 7 indices

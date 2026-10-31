@@ -14,9 +14,11 @@ package amrwb
 
 // coder encodes one frame. modePtr is the internal mode index (0..8); speech16k
 // is 320 input samples; prms receives the internal-order parameter bits;
-// returns the frame's bit count. allowDtx is ignored (DTX encode not ported).
+// returns the frame's bit count. With allowDtx != 0 *modePtr may change to
+// dMRDTX, and prms then receives the SID parameter bits.
 func (st *coderState) coder(modePtr *int16, speech16k []int16, prms []int16, allowDtx int16) int16 {
 	mode := *modePtr
+	codecMode := mode
 	serSize := amrwbCompressed[mode]
 	w := &paramWriter{bits: prms}
 
@@ -120,7 +122,14 @@ func (st *coderState) coder(modePtr *int16, speech16k []int16, prms []int16, all
 	} else {
 		st.vadHist = 0
 	}
-	_ = allowDtx
+
+	// DTX processing. Note that the mode may change here.
+	if allowDtx != 0 {
+		st.dtxEncSt.txDtxHandler(vadFlag, &mode)
+		*modePtr = mode
+		serSize = amrwbCompressed[mode]
+	}
+
 	if mode != dMRDTX {
 		w.parm(vadFlag, 1)
 	}
@@ -214,6 +223,41 @@ func (st *coderState) coder(modePtr *int16, speech16k []int16, prms []int16, all
 		tOp2 = tOp
 	}
 
+	// DTX-CNG.
+	if mode == dMRDTX {
+		// Buffer ISFs and energy. The filter is the same in all four subframes:
+		// Residu is limited to L_SUBFR, the reference runs it on L_FRAME.
+		for iSub := 0; iSub < cL_FRAME; iSub += cL_SUBFR {
+			Residu(A[3*(cM+1):], oldSpeech, speechOff+iSub, oldExc[excBase+iSub:], cL_SUBFR)
+		}
+		exc2 := make([]int16, cL_FRAME)
+		for i := range exc2 {
+			exc2[i] = shr(oldExc[excBase+i], qNew)
+		}
+		st.dtxEncSt.buffer(isf, frameEnergy(exc2), codecMode)
+
+		// Quantize and code the ISFs.
+		st.dtxEncSt.encode(isf, exc2, w)
+
+		// Convert ISFs to the cosine domain.
+		ispnewQ := make([]int16, cM)
+		Aq := make([]int16, cM+1)
+		Isf_isp(isf, ispnewQ, cM)
+		Isp_Az(ispnewQ, Aq, cM, 0)
+
+		for iSub := 0; iSub < cL_FRAME; iSub += cL_SUBFR {
+			st.synthesis(Aq, exc2[iSub:iSub+cL_SUBFR], 0, speech16k[iSub*5/4:])
+		}
+		copy(st.isfold[:], isf)
+
+		// Reset speech coder memories.
+		st.reset(false)
+
+		copy(st.oldSpeech[:], oldSpeech[cL_FRAME:cL_FRAME+(lTotal-cL_FRAME)])
+		copy(st.oldWsp[:], oldWsp[cL_FRAME/cOPL_DECIM:cL_FRAME/cOPL_DECIM+cPIT_MAX/cOPL_DECIM])
+		return serSize
+	}
+
 	// ISF quantization.
 	indice := make([]int16, 8)
 	if serSize <= cNBBITS_7k {
@@ -265,6 +309,16 @@ func (st *coderState) coder(modePtr *int16, speech16k []int16, prms []int16, all
 		pAq += cM + 1
 	}
 
+	exc2 := make([]int16, cL_FRAME)
+
+	// Buffer ISFs and energy for DTX on non-speech frames.
+	if vadFlag == 0 {
+		for i := range exc2 {
+			exc2[i] = oldExc[excBase+i] >> uint(qNew)
+		}
+		st.dtxEncSt.buffer(isf, frameEnergy(exc2), codecMode)
+	}
+
 	t0min := tOp - 8
 	if t0min < cPIT_MIN {
 		t0min = cPIT_MIN
@@ -286,7 +340,6 @@ func (st *coderState) coder(modePtr *int16, speech16k []int16, prms []int16, all
 	code2 := make([]int16, cL_SUBFR)
 	gCoeff := make([]int16, 4)
 	gCoeff2 := make([]int16, 4)
-	exc2 := make([]int16, cL_FRAME)
 
 	pA = 0
 	pAq = 0
@@ -614,4 +667,14 @@ func (st *coderState) coder(modePtr *int16, speech16k []int16, prms []int16, all
 	copy(st.oldWsp[:], oldWsp[cL_FRAME/cOPL_DECIM:cL_FRAME/cOPL_DECIM+cPIT_MAX/cOPL_DECIM])
 	copy(st.oldExc[:], oldExc[cL_FRAME:cL_FRAME+cPIT_MAX+cL_INTERPOL])
 	return serSize
+}
+
+// frameEnergy returns the energy of an L_FRAME excitation, wrapping like the
+// reference.
+func frameEnergy(exc []int16) int32 {
+	var lTmp int32
+	for _, v := range exc {
+		lTmp += (int32(v) * int32(v)) << 1
+	}
+	return lTmp >> 1
 }

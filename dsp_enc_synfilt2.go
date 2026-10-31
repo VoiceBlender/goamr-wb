@@ -1,8 +1,8 @@
 package amrwb
 
 // Encoder synthesis-side filters, ported verbatim from the Apache-2.0
-// vo-amrwbenc reference (deemph.c, hp400.c, hp6k.c), derived from 3GPP TS
-// 26.190. These use the encoder's fixed-point formulations (distinct from the
+// vo-amrwbenc reference (syn_filt.c, deemph.c, hp400.c, hp6k.c), derived from
+// 3GPP TS 26.190. These use the encoder's fixed-point formulations (distinct from the
 // decoder equivalents) and are kept separate for bit-exactness.
 
 // Deemph_32 applies 1/(1 - mu z^-1) to the 32-bit (hi/lo) synthesis (Deemph_32).
@@ -25,6 +25,37 @@ func Deemph_32(xHi, xLo, y []int16, mu, L int16, mem *int16) {
 		y[i] = int16((lTmp + 0x8000) >> 16)
 	}
 	*mem = y[L-1]
+}
+
+// encSynFilt32 is the encoder's 32-bit (hi/lo) synthesis filter (Syn_filt_32 in
+// syn_filt.c), with M history before offset off in sigHi and sigLo. It is not
+// the decoder's Syn_filt_32: as in the reference, the feedback uses a[0..15]
+// rather than a[1..16], and the result is shifted right by 3, not left. Its
+// output only reaches the bitstream through the high-band gain estimate, which
+// matters during DTX hangover.
+func encSynFilt32(a, exc []int16, qnew int16, sigHi, sigLo []int16, off int, lg int16) {
+	a0 := int32(a[0] >> uint(4+qnew)) // input / 16 and >>Qnew
+
+	for i := 0; i < int(lg); i++ {
+		var lTmp, lTmp1 int32
+		for j := 0; j < cM; j++ {
+			lTmp -= int32(sigLo[off+i-1-j]) * int32(a[j])
+			lTmp1 -= int32(sigHi[off+i-1-j]) * int32(a[j])
+		}
+
+		lTmp >>= 11
+		lTmp += (int32(exc[i]) * a0) << 1
+
+		// sig_hi = bit16 to bit31 of synthesis
+		lTmp -= lTmp1 << 1
+
+		lTmp >>= 3 // ai in Q12
+		sigHi[off+i] = extract_h(lTmp)
+
+		// sig_lo = bit4 to bit15 of synthesis
+		lTmp >>= 4
+		sigLo[off+i] = int16(lTmp - int32(sigHi[off+i])<<13)
+	}
 }
 
 var hp400A = [3]int16{16384, 29280, -14160}

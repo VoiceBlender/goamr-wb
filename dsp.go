@@ -14,6 +14,8 @@ package amrwb
 // encoderState holds the persistent encoder analysis state across frames.
 type encoderState struct {
 	st      coderState
+	tx      txState
+	dtx     bool // allow_dtx: emit SID and NO_DATA frames on non-speech
 	started bool
 	inBuf   [cAMR_WB_PCM_FRAME]int16 // masked-input scratch, reused per frame
 	prmsBuf [cNBBITS_24k]int16       // serial-parameter scratch, reused per frame
@@ -21,6 +23,7 @@ type encoderState struct {
 
 func (s *encoderState) reset() {
 	s.st.reset(true)
+	s.tx.reset()
 	s.started = true
 }
 
@@ -28,16 +31,18 @@ func (s *encoderState) reset() {
 // RFC 4867 frame payload bytes (the sorted/packed speech bits, without the
 // CMR/ToC header which the caller adds).
 //
-// Bit-exactness against vo-amrwbenc is checked by TestEncDiffAgainstCReference
-// and TestEncSpeechDiffAgainstCReference. DTX/SID encoding is not ported.
+// Bit-exactness against vo-amrwbenc is checked by TestEncDiffAgainstCReference,
+// TestEncSpeechDiffAgainstCReference and TestEncDTXDiffAgainstCReference.
 func (s *encoderState) encodeFrame(mode Mode, samples []int16) ([]byte, error) {
 	out := make([]byte, packed_size[mode])
-	return s.encodeFrameInto(out, mode, samples)
+	f, err := s.encodeFrameInto(out, mode, samples)
+	return f.data, err
 }
 
 // encodeFrameInto is encodeFrame writing the packed frame into dst, which must
-// hold at least packed_size[mode] bytes. It does not allocate.
-func (s *encoderState) encodeFrameInto(dst []byte, mode Mode, samples []int16) ([]byte, error) {
+// hold at least packed_size[mode] bytes. It returns the frame, which with DTX
+// on may be a SID or a NO_DATA frame, and does not allocate.
+func (s *encoderState) encodeFrameInto(dst []byte, mode Mode, samples []int16) (frame, error) {
 	if !s.started {
 		s.reset()
 	}
@@ -53,9 +58,20 @@ func (s *encoderState) encodeFrameInto(dst []byte, mode Mode, samples []int16) (
 	for i := range prms {
 		prms[i] = 0
 	}
+	var allowDtx int16
+	if s.dtx {
+		allowDtx = 1
+	}
 	m := int16(mode)
-	s.st.coder(&m, in, prms, 0)
-	return packFrameInto(dst, prms, int16(mode)), nil
+	s.st.coder(&m, in, prms, allowDtx)
+	switch txType := s.tx.frameType(m); txType {
+	case cTX_SPEECH:
+		return frame{ft: mode.FrameType(), q: true, data: packFrameInto(dst, prms, m)}, nil
+	case cTX_NO_DATA:
+		return frame{ft: FTNoData, q: true}, nil
+	default:
+		return frame{ft: FTSID, q: true, data: packSIDInto(dst, prms, txType, int16(mode))}, nil
+	}
 }
 
 // decoderState holds the persistent decoder synthesis state across frames,
@@ -77,9 +93,7 @@ func (s *decoderState) reset() {
 	s.started = true
 }
 
-// decodeFrame decodes one parsed AMR-WB frame into 320 PCM samples. Speech
-// frames are fully decoded; SID/NO_DATA/SPEECH_LOST currently emit silence /
-// concealment (CNG synthesis not yet ported).
+// decodeFrame decodes one parsed AMR-WB frame into 320 PCM samples.
 func (s *decoderState) decodeFrame(f frame) ([]int16, error) {
 	synth := make([]int16, cAMR_WB_PCM_FRAME)
 	if err := s.decodeFrameInto(f, synth); err != nil {

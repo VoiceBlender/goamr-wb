@@ -82,6 +82,35 @@ func TestEncodeToAndDecodeToDoNotAllocate(t *testing.T) {
 	}
 }
 
+func TestDTXPathsDoNotAllocate(t *testing.T) {
+	silence := make([]int16, FrameSamples)
+	enc, _ := NewEncoder(EncoderConfig{Mode: Mode1265, OctetAligned: true, DTX: true})
+	payload := make([]byte, MaxPayloadBytes)
+	for range 40 { // through the hangover and into DTX
+		if _, err := enc.EncodeTo(payload, silence); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if allocs := testing.AllocsPerRun(50, func() {
+		_, _ = enc.EncodeTo(payload, silence)
+	}); allocs != 0 {
+		t.Errorf("EncodeTo allocates %.0f times per DTX frame", allocs)
+	}
+
+	dec := NewDecoder(DecoderConfig{OctetAligned: true})
+	pcm := make([]int16, FrameSamples)
+	sid := []byte{0xF0, FTSID<<3 | 0x04, 0x12, 0x34, 0x56, 0x78, 0x9A | 0x10}
+	if _, err := dec.DecodeTo(pcm, sid); err != nil { // grow parser buffers
+		t.Fatal(err)
+	}
+	if allocs := testing.AllocsPerRun(50, func() {
+		_, _ = dec.DecodeTo(pcm, sid)
+		_, _ = dec.DecodeNoData(pcm)
+	}); allocs != 0 {
+		t.Errorf("SID and NO_DATA decoding allocates %.0f times per pair of frames", allocs)
+	}
+}
+
 func TestIntoAPIsRejectShortBuffers(t *testing.T) {
 	enc, _ := NewEncoder(EncoderConfig{Mode: Mode2385, OctetAligned: true})
 	if _, err := enc.EncodeTo(make([]byte, 10), toneFrames(1)[0]); err == nil {
@@ -91,6 +120,9 @@ func TestIntoAPIsRejectShortBuffers(t *testing.T) {
 	dec := NewDecoder(DecoderConfig{OctetAligned: true})
 	if _, err := dec.DecodeTo(make([]int16, FrameSamples-1), payload); err == nil {
 		t.Fatal("DecodeTo accepted a destination smaller than one frame")
+	}
+	if _, err := dec.DecodeNoData(make([]int16, FrameSamples-1)); err == nil {
+		t.Fatal("DecodeNoData accepted a destination smaller than one frame")
 	}
 }
 

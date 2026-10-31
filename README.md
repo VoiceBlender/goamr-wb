@@ -1,25 +1,26 @@
 # goamr-wb
 
 A **pure-Go AMR-WB (ITU-T G.722.2 / 3GPP TS 26.190) codec** — no cgo. Encoder and
-decoder for all nine speech modes (6.60–23.85 kbit/s), plus RFC 4867 RTP payload
-framing in both octet-aligned and bandwidth-efficient formats.
+decoder for all nine speech modes (6.60–23.85 kbit/s) with DTX and comfort noise, plus
+RFC 4867 RTP payload framing in both octet-aligned and bandwidth-efficient formats.
 
 Every Go AMR-WB option on pkg.go.dev is a cgo wrapper around the C `opencore-amrwb` /
 `vo-amrwbenc` libraries. This package is a hand-port of that fixed-point reference to Go,
 so it builds with `CGO_ENABLED=0` and cross-compiles anywhere Go does.
 
 The decoder is **bit-exact** with `opencore-amrwb`'s `D_IF_decode` in all nine modes for
-speech frames, lost frames (concealment), mode switches, and decoder homing frames,
-including its 14-bit output. Known gaps:
+speech frames, lost frames (concealment), mode switches, decoder homing frames and comfort
+noise, including its 14-bit output. Known difference:
 
-- **Comfort noise:** SID/DTX comfort-noise synthesis is not ported, so SID frames decode
-  as silence.
 - **Q bit:** frames with Q=0 are treated as bad frames (RFC 4867). `D_IF_decode` ignores
-  the Q bit.
+  the Q bit, so bad speech and SID frames have no reference to compare against.
 
-The encoder is **bit-exact** with `vo-amrwbenc`'s `E_IF_encode` (DTX off) in all nine
-modes, from quiet to clipped input and across mode switches, including the VAD flag. It
-does not implement DTX, so it never emits SID frames.
+The encoder is **bit-exact** with `vo-amrwbenc`'s `E_IF_encode`, with DTX on or off, in all
+nine modes, from quiet to clipped input and across mode switches, including the VAD flag
+and SID frames. Known gap:
+
+- **Encoder homing:** an input frame of the encoder homing pattern does not reset the
+  encoder, as it does in `E_IF_encode`, so the output differs after such a frame.
 
 Both claims are checked by the differential tests below.
 
@@ -44,6 +45,32 @@ pcm, _ := dec.Decode(payload)     // back to 320 PCM samples
 
 `Encode` takes exactly `amrwb.FrameSamples` (320) samples; `Decode` accepts a full RFC 4867
 payload and returns concatenated PCM for every frame it carries.
+
+### DTX
+
+With `EncoderConfig{DTX: true}` the encoder stops sending speech during silence. It sends
+a short SID frame, usually every 8th frame, and an empty payload for the frames in between.
+The sender has to skip those, while keeping the RTP clock running:
+
+```go
+payload, _ := enc.Encode(frame)
+if len(payload) > 0 { // empty: NO_DATA, send nothing (RFC 4867, section 4.3.2)
+    send(payload, timestamp, enc.Talkspurt()) // Talkspurt: the RTP marker bit
+}
+timestamp += amrwb.FrameSamples
+```
+
+Any peer may use DTX, whether or not this encoder does, so a receiver has to run the decoder
+every 20 ms, not only when a packet arrives. Otherwise each SID frame plays as a 20 ms burst
+of noise instead of continuous comfort noise:
+
+```go
+if pkt != nil { // the packet due for this 20 ms interval
+    dec.DecodeTo(pcm, pkt.Payload)
+} else {
+    dec.DecodeNoData(pcm) // comfort noise in DTX, concealment otherwise
+}
+```
 
 ## Performance
 
@@ -130,11 +157,20 @@ make harness AMRWB_DEC_LIBS="-L/opt/homebrew/lib -lopencore-amrwb" \
              AMRWB_ENC_LIBS="-L/opt/homebrew/lib -lvo-amrwbenc"
 ```
 
+Use Ubuntu 24.04's `libvo-amrwbenc0`: `speech/23.05k` fails against Ubuntu 26.04's, a rebuild
+of the same source with GCC 15 and LTO. `search_ixiy` in `c4t64fx.c` overflows a signed
+integer, which C leaves undefined, and that build compiles the comparison after it differently,
+so the search can pick another pulse. This package wraps, as `vo-amrwbenc` does when built with
+`-fwrapv`, and the 26.04 output is only a different choice of pulses: its frames still decode.
+
 The decoder test feeds identical streams to the public `Decoder` (both payload formats) and
 to `D_IF_decode`, and requires identical PCM. The streams cover random bits, reference-encoded
 speech from quiet to clipped, mode switches, lost frames (including bursts and a lost first
-frame) and decoder homing frames. The encoder tests compare the same speech signal and a
-two-tone signal, through the public `Encoder` with mode switches and both payload formats.
+frame), decoder homing frames, and DTX: reference streams with and without losses, comfort
+noise muting, and SID frames with random parameters in orders no encoder produces. The
+encoder tests compare the same speech signal and a two-tone signal, through the public
+`Encoder` with mode switches and both payload formats, and with DTX on, switched during a
+stream, and against noise that varies in level and spectrum.
 To run a test directly, set `AMRWB_DIFF` (decoder harness) and `AMRWB_ENC` (encoder harness)
 to the built binaries. `AMRWB_BENCH_FRAMES` tunes the speed comparison's frame count
 (default 4000).
