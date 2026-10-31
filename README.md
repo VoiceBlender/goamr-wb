@@ -157,6 +157,12 @@ make harness AMRWB_DEC_LIBS="-L/opt/homebrew/lib -lopencore-amrwb" \
              AMRWB_ENC_LIBS="-L/opt/homebrew/lib -lvo-amrwbenc"
 ```
 
+Use Ubuntu 24.04's `libvo-amrwbenc0`: `speech/23.05k` fails against Ubuntu 26.04's, a rebuild
+of the same source with GCC 15 and LTO. `search_ixiy` in `c4t64fx.c` overflows a signed
+integer, which C leaves undefined, and that build compiles the comparison after it differently,
+so the search can pick another pulse. This package wraps, as `vo-amrwbenc` does when built with
+`-fwrapv`, and the 26.04 output is only a different choice of pulses: its frames still decode.
+
 The decoder test feeds identical streams to the public `Decoder` (both payload formats) and
 to `D_IF_decode`, and requires identical PCM. The streams cover random bits, reference-encoded
 speech from quiet to clipped, mode switches, lost frames (including bursts and a lost first
