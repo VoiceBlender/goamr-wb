@@ -280,3 +280,35 @@ func encDTXCompare(t *testing.T, sig []int16, modeOf func(frame int) int) {
 		}
 	}
 }
+
+// withEncHomingFrames returns a copy of sig with encoder homing frames in place of
+// the given frames.
+func withEncHomingFrames(sig []int16, frames ...int) []int16 {
+	out := append([]int16(nil), sig...)
+	for _, f := range frames {
+		for i := range out[f*FrameSamples : (f+1)*FrameSamples] {
+			out[f*FrameSamples+i] = cEHF_MASK
+		}
+	}
+	return out
+}
+
+// TestEncHomingDiffAgainstCReference feeds encoder homing frames, alone,
+// back to back, first, and during DTX, to the public Encoder and to
+// vo-amrwbenc's E_IF_encode (AMRWB_ENC), requiring identical frames: each one
+// must reset the encoder exactly as the reference does.
+func TestEncHomingDiffAgainstCReference(t *testing.T) {
+	speech := withEncHomingFrames(testSignal(), 0, 37, 120, 121, 122, 201)
+	dtx := withEncHomingFrames(dtxSignal(), 15, 60, 61, 140)
+	for mode := 0; mode <= 8; mode++ {
+		t.Run("speech/"+modeNames[mode], func(t *testing.T) {
+			encDTXCompare(t, speech, func(int) int { return mode })
+		})
+		t.Run("dtx/"+modeNames[mode], func(t *testing.T) {
+			encDTXCompare(t, dtx, func(int) int { return mode | dtxFlag })
+		})
+	}
+	t.Run("modeswitch", func(t *testing.T) {
+		encDTXCompare(t, speech, func(f int) int { return (f / 7) % 9 })
+	})
+}

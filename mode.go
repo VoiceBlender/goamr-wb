@@ -28,6 +28,10 @@ const (
 	numSpeechModes
 )
 
+// NoModeRequest is the codec mode request (CMR) value 15 of RFC 4867: the
+// sender of a payload asks for no particular mode.
+const NoModeRequest Mode = 15
+
 // Frame type (FT) values carried in the RFC 4867 ToC byte. Values 0..8 are the
 // speech modes; the remainder describe comfort noise and no-data frames.
 const (

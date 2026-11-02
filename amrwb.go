@@ -19,6 +19,7 @@ var (
 type Encoder struct {
 	mode         Mode
 	octetAligned bool
+	cmr          Mode // codec mode request sent to the peer
 	st           encoderState
 	lastFT       int      // frame type of the last encoded frame
 	talkspurt    bool     // the last encoded frame starts a talkspurt
@@ -41,7 +42,7 @@ func NewEncoder(cfg EncoderConfig) (*Encoder, error) {
 	if !cfg.Mode.Valid() {
 		return nil, errors.New("amrwb: invalid encoder mode")
 	}
-	e := &Encoder{mode: cfg.Mode, octetAligned: cfg.OctetAligned, lastFT: FTNoData}
+	e := &Encoder{mode: cfg.Mode, octetAligned: cfg.OctetAligned, cmr: NoModeRequest, lastFT: FTNoData}
 	e.st.dtx = cfg.DTX
 	e.st.reset()
 	return e, nil
@@ -80,9 +81,9 @@ func (e *Encoder) EncodeTo(dst []byte, samples []int16) (int, error) {
 		ok bool
 	)
 	if e.octetAligned {
-		n, ok = packOctetInto(dst, noCMR, f)
+		n, ok = packOctetInto(dst, int(e.cmr), f)
 	} else {
-		n, ok = packBandwidthEfficientInto(dst, noCMR, f)
+		n, ok = packBandwidthEfficientInto(dst, int(e.cmr), f)
 	}
 	if !ok {
 		return 0, errShortDst
@@ -90,11 +91,23 @@ func (e *Encoder) EncodeTo(dst []byte, samples []int16) (int, error) {
 	return n, nil
 }
 
-// SetMode changes the active speech mode (e.g. in response to a peer CMR).
+// SetMode changes the active speech mode, e.g. to the one the peer requests
+// (see Decoder.ModeRequest). An invalid mode is ignored.
 func (e *Encoder) SetMode(m Mode) {
 	if m.Valid() {
 		e.mode = m
 	}
+}
+
+// SetModeRequest sets the codec mode request (CMR) carried by every payload
+// from now on, asking the peer to encode in mode m (RFC 4867, section 4.3.1).
+// NoModeRequest, the default, or any invalid mode asks for none. With DTX on,
+// the peer sees it only once a SID or speech frame is sent.
+func (e *Encoder) SetModeRequest(m Mode) {
+	if !m.Valid() {
+		m = NoModeRequest
+	}
+	e.cmr = m
 }
 
 // Talkspurt reports whether the last encoded frame is speech and is either the
@@ -102,7 +115,7 @@ func (e *Encoder) SetMode(m Mode) {
 // of its packet must be set (RFC 4867, section 4.1).
 func (e *Encoder) Talkspurt() bool { return e.talkspurt }
 
-// Reset clears all encoder state.
+// Reset clears all encoder state. The mode and mode request are kept.
 func (e *Encoder) Reset() {
 	e.st.reset()
 	e.lastFT = FTNoData
@@ -112,6 +125,7 @@ func (e *Encoder) Reset() {
 // Decoder decodes AMR-WB RFC 4867 RTP payloads into 16 kHz mono PCM.
 type Decoder struct {
 	octetAligned bool
+	cmr          Mode // codec mode request of the last payload decoded
 	st           decoderState
 	parser       payloadParser
 }
@@ -123,7 +137,7 @@ type DecoderConfig struct {
 
 // NewDecoder creates an AMR-WB decoder for the given payload format.
 func NewDecoder(cfg DecoderConfig) *Decoder {
-	d := &Decoder{octetAligned: cfg.OctetAligned}
+	d := &Decoder{octetAligned: cfg.OctetAligned, cmr: NoModeRequest}
 	d.st.reset()
 	return d
 }
@@ -176,11 +190,31 @@ func (d *Decoder) DecodeNoData(dst []int16) (int, error) {
 	return FrameSamples, nil
 }
 
+// ModeRequest returns the codec mode request (CMR) of the last payload Decode
+// or DecodeTo accepted: the mode the peer asks this side to encode in, to pass
+// to Encoder.SetMode (RFC 4867, section 4.3.1). It returns NoModeRequest when
+// the peer asks for none, sends a reserved value, or before any payload. The
+// request stands until a payload carries another, so DecodeNoData keeps it.
+func (d *Decoder) ModeRequest() Mode { return d.cmr }
+
 func (d *Decoder) parse(payload []byte) ([]frame, error) {
+	var (
+		frames []frame
+		err    error
+	)
 	if d.octetAligned {
-		return d.parser.parseOctet(payload)
+		frames, err = d.parser.parseOctet(payload)
+	} else {
+		frames, err = d.parser.parseBandwidthEfficient(payload)
 	}
-	return d.parser.parseBandwidthEfficient(payload)
+	if err != nil {
+		return nil, err
+	}
+	d.cmr = Mode(d.parser.cmr)
+	if !d.cmr.Valid() {
+		d.cmr = NoModeRequest
+	}
+	return frames, nil
 }
 
 func (d *Decoder) decodeFrames(dst []int16, frames []frame) error {
@@ -192,5 +226,8 @@ func (d *Decoder) decodeFrames(dst []int16, frames []frame) error {
 	return nil
 }
 
-// Reset clears all decoder state.
-func (d *Decoder) Reset() { d.st.reset() }
+// Reset clears all decoder state, including the last mode request.
+func (d *Decoder) Reset() {
+	d.st.reset()
+	d.cmr = NoModeRequest
+}
