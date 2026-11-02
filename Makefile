@@ -46,12 +46,12 @@ bench-vs-c: harness bench-vs-c-enc bench-vs-c-dec
 # Encoder Go-vs-vo-amrwbenc per-mode table.
 bench-vs-c-enc:
 	AMRWB_ENC=$(abspath $(AMRWB_ENC)) AMRWB_BENCH_FRAMES=$(AMRWB_BENCH_FRAMES) \
-		go test -run TestEncSpeedVsCReference -v .
+		go test -count=1 -run TestEncSpeedVsCReference -v .
 
 # Decoder Go-vs-opencore-amrwb per-mode table.
 bench-vs-c-dec:
 	AMRWB_DIFF=$(abspath $(AMRWB_DIFF)) AMRWB_BENCH_FRAMES=$(AMRWB_BENCH_FRAMES) \
-		go test -run TestDecSpeedVsCReference -v .
+		go test -count=1 -run TestDecSpeedVsCReference -v .
 
 vet:
 	go vet ./...
