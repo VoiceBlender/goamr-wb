@@ -16,11 +16,8 @@ noise, including its 14-bit output. Known difference:
   the Q bit, so bad speech and SID frames have no reference to compare against.
 
 The encoder is **bit-exact** with `vo-amrwbenc`'s `E_IF_encode`, with DTX on or off, in all
-nine modes, from quiet to clipped input and across mode switches, including the VAD flag
-and SID frames. Known gap:
-
-- **Encoder homing:** an input frame of the encoder homing pattern does not reset the
-  encoder, as it does in `E_IF_encode`, so the output differs after such a frame.
+nine modes, from quiet to clipped input and across mode switches, including the VAD flag,
+SID frames and encoder homing frames.
 
 Both claims are checked by the differential tests below.
 
@@ -45,6 +42,20 @@ pcm, _ := dec.Decode(payload)     // back to 320 PCM samples
 
 `Encode` takes exactly `amrwb.FrameSamples` (320) samples; `Decode` accepts a full RFC 4867
 payload and returns concatenated PCM for every frame it carries.
+
+### Mode requests (CMR)
+
+Each payload carries a codec mode request: the mode its sender would like to receive.
+`Decoder.ModeRequest` returns the peer's latest request, or `amrwb.NoModeRequest`, and
+`Encoder.SetModeRequest` sets the one this side sends (none by default):
+
+```go
+dec.DecodeTo(pcm, pkt.Payload)
+if m := dec.ModeRequest(); m != amrwb.NoModeRequest {
+    enc.SetMode(m) // honour the peer's request, within the negotiated mode-set
+}
+enc.SetModeRequest(amrwb.Mode1265) // ask the peer for 12.65 kbit/s
+```
 
 ### DTX
 
@@ -170,7 +181,8 @@ frame), decoder homing frames, and DTX: reference streams with and without losse
 noise muting, and SID frames with random parameters in orders no encoder produces. The
 encoder tests compare the same speech signal and a two-tone signal, through the public
 `Encoder` with mode switches and both payload formats, and with DTX on, switched during a
-stream, and against noise that varies in level and spectrum.
+stream, and against noise that varies in level and spectrum, and with encoder homing
+frames, alone and back to back, in speech and in DTX.
 To run a test directly, set `AMRWB_DIFF` (decoder harness) and `AMRWB_ENC` (encoder harness)
 to the built binaries. `AMRWB_BENCH_FRAMES` tunes the speed comparison's frame count
 (default 4000).

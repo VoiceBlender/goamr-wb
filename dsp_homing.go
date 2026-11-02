@@ -79,3 +79,15 @@ func homingFrameTest(params []int16, mode int16) bool {
 func homingFrameTestFirst(params []int16, mode int16) bool {
 	return dhfTest(params, mode, prmnofsf[mode])
 }
+
+// encoderHomingFrameTest reports whether the input frame is the encoder homing
+// frame: every sample equal to EHF_MASK (encoder_homing_frame_test, vo-amrwbenc
+// homing.c).
+func encoderHomingFrameTest(input []int16) bool {
+	for _, v := range input[:cL_FRAME16k] {
+		if v^cEHF_MASK != 0 {
+			return false
+		}
+	}
+	return true
+}

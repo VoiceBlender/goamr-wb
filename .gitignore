@@ -1,3 +1,6 @@
 # Go workspace files are local dev config, not part of the published module.
 /go.work
 /go.work.sum
+
+# Compiled test binaries (go test -c).
+*.test

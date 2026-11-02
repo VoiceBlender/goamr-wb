@@ -46,6 +46,12 @@ func (s *encoderState) encodeFrameInto(dst []byte, mode Mode, samples []int16) (
 	if !s.started {
 		s.reset()
 	}
+	// An encoder homing frame is coded as usual and then resets the encoder
+	// (AMR_Enc_Encode). The DTX frame-type counters survive, as in the
+	// reference, because Reset_encoder does not touch them.
+	if encoderHomingFrameTest(samples) {
+		defer s.st.reset(true)
+	}
 	// The reference encoder masks the 2 LSBs of every input sample (14-bit
 	// input convention) before analysis; replicate on a (reused) copy.
 	in := s.inBuf[:len(samples)]

@@ -166,6 +166,7 @@ func unpackPayloadBandwidthEfficient(p []byte) (cmr int, frames []frame, err err
 // frame data aliases the payload; bandwidth-efficient frame data aliases the
 // parser's bit buffer. Frames are valid until the next parse.
 type payloadParser struct {
+	cmr    int // CMR of the last payload parsed without error
 	frames []frame
 	fts    []int
 	qs     []bool
@@ -188,6 +189,7 @@ func (pp *payloadParser) parseOctet(p []byte) ([]frame, error) {
 			break
 		}
 	}
+	cmr := int(p[0] >> 4)
 	frames := pp.frames[:0]
 	for _, toc := range p[tocStart:idx] {
 		ft := int(toc>>3) & 0x0F
@@ -202,12 +204,14 @@ func (pp *payloadParser) parseOctet(p []byte) ([]frame, error) {
 		idx += nb
 	}
 	pp.frames = frames
+	pp.cmr = cmr
 	return frames, nil
 }
 
 func (pp *payloadParser) parseBandwidthEfficient(p []byte) ([]frame, error) {
 	r := bitReader{data: p}
-	if _, ok := r.readBits(4); !ok {
+	cmr, ok := r.readBits(4)
+	if !ok {
 		return nil, errShortPayload
 	}
 	fts, qs := pp.fts[:0], pp.qs[:0]
@@ -253,6 +257,7 @@ func (pp *payloadParser) parseBandwidthEfficient(p []byte) ([]frame, error) {
 		off += nb
 	}
 	pp.frames = frames
+	pp.cmr = int(cmr)
 	return frames, nil
 }
 
