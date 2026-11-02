@@ -148,14 +148,17 @@ correlation, residual, and adaptive-codebook interpolation) use AVX2 assembly on
 bit-identical pure-Go path elsewhere (or on `amd64` with `-tags purego`). An encoder pass
 vectorized the open-loop pitch / autocorrelation / `normCorr` kernels and made `L_shl` O(1) (**encode 8–16 %** faster); a later
 pass routed the decoder's `Pred_lt4` adaptive-codebook interpolation through `firDot`
-(**decode ~6–9 %** faster, halving the gap to C). Every kernel is fuzz-tested bit-identical to
-its scalar fallback (see the bit-exactness notes above).
+(**decode ~6–9 %** faster, halving the gap to C). A third pass put the encoder's codebook
+correlations (`corHVec012`, `corHVec30`), the 12.8 kHz decimation and `Convolve` on the same
+kernels and removed bounds checks from `searchIxiy` (**encode 13–30 %** faster). Every kernel
+is fuzz-tested bit-identical to its scalar fallback or to the verbatim port it replaced (see
+the bit-exactness notes above).
 
 Measured on an **AMD Ryzen 9 7900 (Zen 4, AVX2), Go 1.26.3, linux/amd64, single core**.
 `Go ×RT` = how many times faster than real time one core runs (so also ≈ concurrent streams
 per core). `C` is the Apache-2.0 `vo-amrwbenc` / `opencore-amrwb` reference, measured across a
 subprocess with the two-point-slope method (4000 frames) to cancel process startup; the
-residual per-frame pipe copy modestly favors the in-process Go figure. The tables below are a
+residual per-frame pipe copy modestly favors the in-process Go figure. Each table below is a
 single back-to-back run, so Go and C are measured under identical conditions and the `Go/C`
 ratio is apples-to-apples. **Caveat:** absolute figures still depend on CPU boost state and
 system load, so treat `Go ×RT` as order-of-magnitude and expect the C subprocess timing to
@@ -166,15 +169,15 @@ and `make bench-vs-c` (needs the C harnesses).
 
 | Mode (kbit/s) | Go | C | Go/C | Go ×RT |
 |---|---|---|---|---|
-| 6.60  |  87.8 |  66.6 | 1.32 | 228× |
-| 8.85  | 119.2 |  77.7 | 1.53 | 168× |
-| 12.65 | 143.9 |  90.9 | 1.58 | 139× |
-| 14.25 | 157.6 |  98.6 | 1.60 | 127× |
-| 15.85 | 159.3 |  98.9 | 1.61 | 126× |
-| 18.25 | 168.0 | 102.8 | 1.63 | 119× |
-| 19.85 | 174.7 | 107.2 | 1.63 | 115× |
-| 23.05 | 172.8 | 106.1 | 1.63 | 116× |
-| 23.85 | 157.8 |  98.5 | 1.60 | 127× |
+| 6.60  |  77.1 |  65.8 | 1.17 | 259× |
+| 8.85  |  94.2 |  77.1 | 1.22 | 212× |
+| 12.65 | 108.6 |  90.2 | 1.20 | 184× |
+| 14.25 | 118.1 |  97.5 | 1.21 | 169× |
+| 15.85 | 119.5 |  99.4 | 1.20 | 167× |
+| 18.25 | 123.4 | 101.4 | 1.22 | 162× |
+| 19.85 | 127.1 | 105.2 | 1.21 | 157× |
+| 23.05 | 126.9 | 105.6 | 1.20 | 158× |
+| 23.85 | 128.5 |  97.2 | 1.32 | 156× |
 
 **Decode** (µs per 20 ms frame):
 
@@ -190,9 +193,9 @@ and `make bench-vs-c` (needs the C harnesses).
 | 23.05 | 26.2 | 23.1 | 1.13 | 765× |
 | 23.85 | 26.9 | 25.8 | 1.04 | 744× |
 
-The remaining encode gap is the algebraic codebook search (`corHVec012`, `searchIxiy`,
-`ACELP_4t64`) — a branchy depth-first search that's scalar in the C reference too, so it
-doesn't vectorize.
+Most of the remaining encode time is the algebraic codebook search: `searchIxiy` is a running
+maximum whose every comparison depends on the previous one (already branch-free), and the
+depth-first search around it is scalar in the C reference too.
 
 ## Tests & benchmarks
 

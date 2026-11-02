@@ -37,6 +37,36 @@ func Residu(a []int16, x []int16, xOff int, y []int16, lg int16) {
 // Convolve computes the truncated convolution y[n] = sum_{j<=n} x[j]h[n-j],
 // n=0..63 (vo_mult32 accumulates without saturation, so order is irrelevant).
 func Convolve(x, h, y []int16) {
+	if useAVX2 {
+		convolveFIR(x, h, y)
+		return
+	}
+	convolveGeneric(x, h, y)
+}
+
+// convolveFIR is Convolve as one 64-tap FIR (firRaw) over x with 63 leading
+// zeros and h reversed: dst[n] = sum_t xp[n+t]*h[63-t] = sum_{j<=n} x[j]h[n-j].
+// It does twice the multiplies of the triangular loop, so it only pays where
+// firRaw is vectorized.
+func convolveFIR(x, h, y []int16) {
+	var xp [2*cL_SUBFR - 1]int16
+	var hr [cL_SUBFR]int16
+	var dst [cL_SUBFR]int32
+	copy(xp[cL_SUBFR-1:], x[:cL_SUBFR])
+	h = h[:cL_SUBFR]
+	for t := range hr {
+		hr[t] = h[cL_SUBFR-1-t]
+	}
+	firRaw(dst[:], xp[:], hr[:])
+	y = y[:cL_SUBFR]
+	for n, s := range dst {
+		y[n] = int16(((s << 1) + 0x8000) >> 16)
+	}
+}
+
+// convolveGeneric is the scalar Convolve, and the oracle convolveFIR is tested
+// against.
+func convolveGeneric(x, h, y []int16) {
 	x = x[:cL_SUBFR] // hoist bounds checks out of the inner loop
 	h = h[:cL_SUBFR]
 	y = y[:cL_SUBFR]
