@@ -14,7 +14,23 @@ package amrwb
 // len(x) >= len(dst)+len(coef)-1.
 func firRawGeneric(dst []int32, x []int16, coef []int16) {
 	taps := len(coef)
-	for o := range dst {
+	// Four outputs at a time: independent accumulators let the CPU overlap
+	// the multiply-adds, and each output sums its terms in the same order.
+	o := 0
+	for ; o+4 <= len(dst); o += 4 {
+		xw := x[o : o+taps+3]
+		var s0, s1, s2, s3 int32
+		for t, c := range coef {
+			c32 := int32(c)
+			w := xw[t : t+4 : t+4]
+			s0 += int32(w[0]) * c32
+			s1 += int32(w[1]) * c32
+			s2 += int32(w[2]) * c32
+			s3 += int32(w[3]) * c32
+		}
+		dst[o], dst[o+1], dst[o+2], dst[o+3] = s0, s1, s2, s3
+	}
+	for ; o < len(dst); o++ {
 		xw := x[o : o+taps]
 		var s int32
 		for t, c := range coef {
@@ -29,9 +45,19 @@ func firRawGeneric(dst []int32, x []int16, coef []int16) {
 // it with VPMADDWD; this is the portable fallback and the fuzz-test oracle.
 func firDotGeneric(a, b []int16) int32 {
 	bb := b[:len(a)]
-	var s int32
-	for i, av := range a {
-		s += int32(av) * int32(bb[i])
+	// Four accumulators, so the multiply-adds overlap; the int32 sum wraps,
+	// so the order of the terms does not change the result.
+	var s0, s1, s2, s3 int32
+	i := 0
+	for ; i+4 <= len(a); i += 4 {
+		x, y := a[i:i+4:i+4], bb[i:i+4:i+4]
+		s0 += int32(x[0]) * int32(y[0])
+		s1 += int32(x[1]) * int32(y[1])
+		s2 += int32(x[2]) * int32(y[2])
+		s3 += int32(x[3]) * int32(y[3])
 	}
-	return s
+	for ; i < len(a); i++ {
+		s0 += int32(a[i]) * int32(bb[i])
+	}
+	return s0 + s1 + s2 + s3
 }

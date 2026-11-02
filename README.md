@@ -150,7 +150,9 @@ vectorized the open-loop pitch / autocorrelation / `normCorr` kernels and made `
 pass routed the decoder's `Pred_lt4` adaptive-codebook interpolation through `firDot`
 (**decode ~6–9 %** faster, halving the gap to C). A third pass put the encoder's codebook
 correlations (`corHVec012`, `corHVec30`), the 12.8 kHz decimation and `Convolve` on the same
-kernels and removed bounds checks from `searchIxiy` (**encode 13–30 %** faster). Every kernel
+kernels and removed bounds checks from `searchIxiy` (**encode 13–30 %** faster), and the
+portable kernels (`purego`, and every non-amd64 target such as arm64) sum with four
+accumulators (**decode 17–22 %**, encode 1–7 % faster on that path). Every kernel
 is fuzz-tested bit-identical to its scalar fallback or to the verbatim port it replaced (see
 the bit-exactness notes above).
 
@@ -158,8 +160,9 @@ Measured on an **AMD Ryzen 9 7900 (Zen 4, AVX2), Go 1.26.3, linux/amd64, single 
 `Go ×RT` = how many times faster than real time one core runs (so also ≈ concurrent streams
 per core). `C` is the Apache-2.0 `vo-amrwbenc` / `opencore-amrwb` reference, measured across a
 subprocess with the two-point-slope method (4000 frames) to cancel process startup; the
-residual per-frame pipe copy modestly favors the in-process Go figure. Each table below is a
-single back-to-back run, so Go and C are measured under identical conditions and the `Go/C`
+residual per-frame pipe copy modestly favors the in-process Go figure. Each figure below is the
+median of three runs that time Go and C back to back, so both are measured under identical
+conditions and the `Go/C`
 ratio is apples-to-apples. **Caveat:** absolute figures still depend on CPU boost state and
 system load, so treat `Go ×RT` as order-of-magnitude and expect the C subprocess timing to
 drift between sessions. Deterministic synthetic speech. Reproduce with `make bench` (Go-only)
@@ -169,29 +172,29 @@ and `make bench-vs-c` (needs the C harnesses).
 
 | Mode (kbit/s) | Go | C | Go/C | Go ×RT |
 |---|---|---|---|---|
-| 6.60  |  77.1 |  65.8 | 1.17 | 259× |
-| 8.85  |  94.2 |  77.1 | 1.22 | 212× |
-| 12.65 | 108.6 |  90.2 | 1.20 | 184× |
-| 14.25 | 118.1 |  97.5 | 1.21 | 169× |
-| 15.85 | 119.5 |  99.4 | 1.20 | 167× |
-| 18.25 | 123.4 | 101.4 | 1.22 | 162× |
-| 19.85 | 127.1 | 105.2 | 1.21 | 157× |
-| 23.05 | 126.9 | 105.6 | 1.20 | 158× |
-| 23.85 | 128.5 |  97.2 | 1.32 | 156× |
+| 6.60  |  78.5 |  67.7 | 1.16 | 255× |
+| 8.85  |  97.3 |  78.9 | 1.23 | 206× |
+| 12.65 | 111.6 |  91.8 | 1.22 | 179× |
+| 14.25 | 122.0 |  99.3 | 1.23 | 164× |
+| 15.85 | 123.0 | 101.4 | 1.21 | 163× |
+| 18.25 | 126.7 | 104.9 | 1.21 | 158× |
+| 19.85 | 130.0 | 107.5 | 1.21 | 154× |
+| 23.05 | 130.4 | 106.4 | 1.23 | 153× |
+| 23.85 | 132.3 |  99.4 | 1.33 | 151× |
 
 **Decode** (µs per 20 ms frame):
 
 | Mode (kbit/s) | Go | C | Go/C | Go ×RT |
 |---|---|---|---|---|
-| 6.60  | 30.2 | 25.8 | 1.17 | 662× |
-| 8.85  | 26.7 | 23.1 | 1.16 | 749× |
-| 12.65 | 24.6 | 21.8 | 1.13 | 813× |
-| 14.25 | 24.5 | 21.9 | 1.12 | 817× |
-| 15.85 | 24.8 | 22.0 | 1.13 | 807× |
-| 18.25 | 25.2 | 22.5 | 1.12 | 794× |
-| 19.85 | 25.4 | 22.5 | 1.13 | 788× |
-| 23.05 | 26.2 | 23.1 | 1.13 | 765× |
-| 23.85 | 26.9 | 25.8 | 1.04 | 744× |
+| 6.60  |  30.6 |  23.6 | 1.29 | 654× |
+| 8.85  |  26.9 |  21.6 | 1.25 | 743× |
+| 12.65 |  25.3 |  20.5 | 1.23 | 791× |
+| 14.25 |  25.0 |  20.3 | 1.23 | 801× |
+| 15.85 |  25.9 |  21.3 | 1.21 | 773× |
+| 18.25 |  28.1 |  22.2 | 1.26 | 712× |
+| 19.85 |  25.9 |  21.5 | 1.20 | 773× |
+| 23.05 |  26.5 |  21.9 | 1.21 | 755× |
+| 23.85 |  27.0 |  24.5 | 1.10 | 740× |
 
 Most of the remaining encode time is the algebraic codebook search: `searchIxiy` is a running
 maximum whose every comparison depends on the previous one (already branch-free), and the
