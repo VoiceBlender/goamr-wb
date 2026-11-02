@@ -44,10 +44,8 @@ func downSamp(signal []int16, sigD []int16, lFrameD int16) {
 		i := pos >> 2
 		frac := pos & 3
 		x := i + 1 // signal-relative base (matches sig+i-NB_COEF_DOWN+1, sig=signal+15)
-		var lSum int32
-		for tcoef := 0; tcoef < 30; tcoef++ {
-			lSum += int32(signal[x+tcoef]) * int32(firDown1[frac][tcoef]) // vo_mult32
-		}
+		// vo_mult32 accumulates without saturation: a firDot.
+		lSum := firDot(firDown1[frac][:], signal[x:x+30])
 		lSum = lShl2(lSum, 2)
 		sigD[j] = extract_h(L_add(lSum, 0x8000))
 		pos += 5

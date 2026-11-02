@@ -18,111 +18,85 @@ var tipos = [36]int16{
 }
 
 // corHVec30 correlates h with vec for track 3 (with the wrap to track 0).
+// The reference's sums accumulate without saturation, so each is a firDot
+// over the overlapping parts of h and vec:
+//
+//	lSum1 = sum_{k<64-pos} h[k]*vec[pos+k]
+//	lSum2 = sum_{k<67-pos} h[k]*vec[pos-3+k]
 func corHVec30(h, vec []int16, track int16, sign []int16, rrixix *[4][cNB_POS]int16, cor1, cor2 []int16) {
-	corX := 0
-	p0i := 0 // rrixix[track]
-	p3i := 0 // rrixix[0]
+	h, vec = h[:cL_SUBFR], vec[:cL_SUBFR]
 	pos := int(track)
-	for i := 0; i < cNB_POS; i += 2 {
-		for half := 0; half < 2; half++ {
-			var lSum1, lSum2 int32
-			hp := 0
-			vp := pos
-			for j := pos; j < cL_SUBFR; j++ {
-				lSum1 += int32(h[hp]) * int32(vec[vp])
-				lSum2 += int32(h[hp]) * int32(vec[vp-3])
-				hp++
-				vp++
-			}
-			vp -= 3
-			lSum2 += int32(h[hp]) * int32(vec[vp])
-			hp++
-			vp++
-			lSum2 += int32(h[hp]) * int32(vec[vp])
-			hp++
-			vp++
-			lSum2 += int32(h[hp]) * int32(vec[vp])
-			lSum1 <<= 2
-			lSum2 <<= 2
-			cor1[corX] = voMult(voRound(lSum1), sign[pos]) + rrixix[track][p0i]
-			p0i++
-			cor2[corX] = voMult(voRound(lSum2), sign[pos-3]) + rrixix[0][p3i]
-			p3i++
-			corX++
-			pos += cSTEP
-		}
+	for i := 0; i < cNB_POS; i++ {
+		lSum1 := firDot(h[:cL_SUBFR-pos], vec[pos:]) << 2
+		lSum2 := firDot(h[:cL_SUBFR+3-pos], vec[pos-3:]) << 2
+		cor1[i] = voMult(voRound(lSum1), sign[pos]) + rrixix[track][i]
+		cor2[i] = voMult(voRound(lSum2), sign[pos-3]) + rrixix[0][i]
+		pos += cSTEP
 	}
 }
 
-// corHVec012 correlates h with vec for tracks 0,1,2.
+// corHVec012 correlates h with vec for tracks 0,1,2, as firDot sums (see
+// corHVec30):
+//
+//	lSum1 = sum_{k<64-pos} h[k]*vec[pos+k]
+//	lSum2 = sum_{k<63-pos} h[k]*vec[pos+1+k]
 func corHVec012(h, vec []int16, track int16, sign []int16, rrixix *[4][cNB_POS]int16, cor1, cor2 []int16) {
-	p0i := 0 // rrixix[track]
-	p3i := 0 // rrixix[track+1]
+	h, vec = h[:cL_SUBFR], vec[:cL_SUBFR]
 	pos := int(track)
-	for i := 0; i < cNB_POS; i += 2 {
-		for half := 0; half < 2; half++ {
-			var lSum1, lSum2 int32
-			hp := 0
-			vp := pos
-			for j := 62 - pos; j >= 0; j-- {
-				lSum1 += int32(h[hp]) * int32(vec[vp])
-				vp++
-				lSum2 += int32(h[hp]) * int32(vec[vp])
-				hp++
-			}
-			lSum1 += int32(h[hp]) * int32(vec[vp])
-			lSum1 <<= 2
-			lSum2 <<= 2
-			cor1[i+half] = voMult(int16((lSum1+0x8000)>>16), sign[pos]) + rrixix[track][p0i]
-			p0i++
-			cor2[i+half] = voMult(int16((lSum2+0x8000)>>16), sign[pos+1]) + rrixix[track+1][p3i]
-			p3i++
-			pos += cSTEP
-		}
+	for i := 0; i < cNB_POS; i++ {
+		lSum1 := firDot(h[:cL_SUBFR-pos], vec[pos:]) << 2
+		lSum2 := firDot(h[:cL_SUBFR-1-pos], vec[pos+1:]) << 2
+		cor1[i] = voMult(int16((lSum1+0x8000)>>16), sign[pos]) + rrixix[track][i]
+		cor2[i] = voMult(int16((lSum2+0x8000)>>16), sign[pos+1]) + rrixix[track+1][i]
+		pos += cSTEP
 	}
 }
 
-// searchIxiy finds the best positions of 2 pulses in adjacent tracks.
+// searchIxiy finds the best positions of 2 pulses in adjacent tracks. It is
+// the reference's search_ixiy with the track-Y values of dn gathered once and
+// fixed-length rows, so the inner loop has no bounds checks; the arithmetic
+// and the order of comparisons are unchanged.
 func searchIxiy(nbPosIx, trackX, trackY int16, ps, alp, ix, iy *int16,
 	dn, dn2, corX, corY []int16, rrixiy *[4][cMSIZE4]int16) {
 
-	p0 := 0 // corX
-	p1 := 0 // corY
-	p2 := 0 // rrixiy[trackX]
 	thresIx := int32(nbPosIx) - cNB_MAX
-
 	alp0 := L_deposit_h(*alp) + 0x00008000
 	sqk := int16(-1)
 	alpk := int16(1)
 
-	for x := int(trackX); x < cL_SUBFR; x += cSTEP {
-		ps1 := *ps + dn[x]
-		alp1 := alp0 + (int32(corX[p0]) << 13)
-		p0++
-		if int32(dn2[x]) < thresIx {
-			pos := -1
-			for y := int(trackY); y < cL_SUBFR; y += cSTEP {
-				ps2 := ps1 + dn[y]
-				alp2 := alp1 + (int32(corY[p1]) << 13)
-				p1++
-				alp2 = alp2 + (int32(rrixiy[trackX][p2]) << 14)
-				p2++
-				alp16 := extract_h(alp2)
-				sq := voMult(ps2, ps2)
-				s := (int32(alpk)*int32(sq))<<1 - (int32(sqk)*int32(alp16))<<1
-				if s > 0 {
-					sqk = sq
-					alpk = alp16
-					pos = y
-				}
+	var dnY [cNB_POS]int16
+	for j := range dnY {
+		dnY[j] = dn[int(trackY)+j*cSTEP]
+	}
+	cy := (*[cNB_POS]int16)(corY[:cNB_POS])
+	cx := (*[cNB_POS]int16)(corX[:cNB_POS])
+	rr := &rrixiy[trackX]
+	ps0 := *ps
+	for i := 0; i < cNB_POS; i++ {
+		x := int(trackX) + i*cSTEP
+		if int32(dn2[x]) >= thresIx {
+			continue
+		}
+		ps1 := ps0 + dn[x]
+		alp1 := alp0 + (int32(cx[i]) << 13)
+		row := (*[cNB_POS]int16)(rr[i*cNB_POS : (i+1)*cNB_POS])
+		pos := -1
+		for j := 0; j < cNB_POS; j++ {
+			ps2 := ps1 + dnY[j]
+			alp2 := alp1 + (int32(cy[j]) << 13)
+			alp2 = alp2 + (int32(row[j]) << 14)
+			alp16 := extract_h(alp2)
+			sq := voMult(ps2, ps2)
+			s := (int32(alpk)*int32(sq))<<1 - (int32(sqk)*int32(alp16))<<1
+			if s > 0 {
+				sqk = sq
+				alpk = alp16
+				pos = j
 			}
-			p1 -= cNB_POS
-			if pos >= 0 {
-				*ix = int16(x)
-				*iy = int16(pos)
-			}
-		} else {
-			p2 += cNB_POS
+		}
+		if pos >= 0 {
+			*ix = int16(x)
+			*iy = int16(int(trackY) + pos*cSTEP)
 		}
 	}
 	*ps = *ps + dn[*ix] + dn[*iy]
