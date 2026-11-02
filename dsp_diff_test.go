@@ -152,6 +152,26 @@ func randomFrames(mode, n int, seed uint32) []refFrame {
 // streams, VAD flags included, independently of the Go encoder.
 func encodeFrames(t *testing.T, pcm []int16, modeOf func(frame int) int) []refFrame {
 	t.Helper()
+	var frames []refFrame
+	for b := encodeStorage(t, pcm, modeOf); len(b) > 0; {
+		ft := int(b[0]>>3) & 0x0F
+		n, ok := frameBytesByFT(ft)
+		if !ok || len(b) < 1+n {
+			t.Fatalf("C encoder: bad storage frame (ft %d) at frame %d", ft, len(frames))
+		}
+		frames = append(frames, refFrame{ft: ft, data: b[1 : 1+n]})
+		b = b[1+n:]
+	}
+	if len(frames) != len(pcm)/FrameSamples {
+		t.Fatalf("C encoder produced %d frames, want %d", len(frames), len(pcm)/FrameSamples)
+	}
+	return frames
+}
+
+// encodeStorage encodes pcm with vo-amrwbenc (AMRWB_ENC) and returns its
+// storage-format frames, without the file header.
+func encodeStorage(t *testing.T, pcm []int16, modeOf func(frame int) int) []byte {
+	t.Helper()
 	bin := os.Getenv("AMRWB_ENC")
 	if bin == "" {
 		t.Skip("set AMRWB_ENC to the vo-amrwbenc reference harness to run (make harness)")
@@ -170,20 +190,7 @@ func encodeFrames(t *testing.T, pcm []int16, modeOf func(frame int) int) []refFr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("C encoder harness: %v: %s", err, cerr.String())
 	}
-	var frames []refFrame
-	for b := cout.Bytes(); len(b) > 0; {
-		ft := int(b[0]>>3) & 0x0F
-		n, ok := frameBytesByFT(ft)
-		if !ok || len(b) < 1+n {
-			t.Fatalf("C encoder: bad storage frame (ft %d) at frame %d", ft, len(frames))
-		}
-		frames = append(frames, refFrame{ft: ft, data: b[1 : 1+n]})
-		b = b[1+n:]
-	}
-	if len(frames) != len(pcm)/FrameSamples {
-		t.Fatalf("C encoder produced %d frames, want %d", len(frames), len(pcm)/FrameSamples)
-	}
-	return frames
+	return cout.Bytes()
 }
 
 // dropFrames replaces frames with SPEECH_LOST / NO_DATA: the first frame,

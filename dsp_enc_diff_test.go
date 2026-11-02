@@ -192,9 +192,9 @@ func TestEncAPIDiffAgainstCReference(t *testing.T) {
 			}
 			var frames []frame
 			if octet {
-				frames, err = pp.parseOctet(dst[:n])
+				frames, err = pp.parse(dst[:n], payloadFormat{octetAligned: true})
 			} else {
-				frames, err = pp.parseBandwidthEfficient(dst[:n])
+				frames, err = pp.parse(dst[:n], payloadFormat{})
 			}
 			if err != nil || len(frames) != 1 {
 				t.Fatalf("octet=%v frame %d: parse: %d frames, %v", octet, f, len(frames), err)
@@ -266,9 +266,9 @@ func encDTXCompare(t *testing.T, sig []int16, modeOf func(frame int) int) {
 			}
 			var frames []frame
 			if octet {
-				frames, err = pp.parseOctet(dst[:n])
+				frames, err = pp.parse(dst[:n], payloadFormat{octetAligned: true})
 			} else {
-				frames, err = pp.parseBandwidthEfficient(dst[:n])
+				frames, err = pp.parse(dst[:n], payloadFormat{})
 			}
 			if err != nil || len(frames) != 1 {
 				t.Fatalf("octet=%v frame %d: parse: %d frames, %v", octet, f, len(frames), err)

@@ -2,7 +2,9 @@
 
 A **pure-Go AMR-WB (ITU-T G.722.2 / 3GPP TS 26.190) codec** — no cgo. Encoder and
 decoder for all nine speech modes (6.60–23.85 kbit/s) with DTX and comfort noise, plus
-RFC 4867 RTP payload framing in both octet-aligned and bandwidth-efficient formats.
+RFC 4867 RTP payload framing (octet-aligned and bandwidth-efficient, several frames per
+packet, frame CRCs, robust sorting, mode-set and mode-change rules) and the `.awb` file
+format. Frame interleaving is not supported.
 
 Every Go AMR-WB option on pkg.go.dev is a cgo wrapper around the C `opencore-amrwb` /
 `vo-amrwbenc` libraries. This package is a hand-port of that fixed-point reference to Go,
@@ -40,8 +42,31 @@ payload, _ := enc.Encode(frame)   // RFC 4867 RTP payload (CMR + ToC + speech bi
 pcm, _ := dec.Decode(payload)     // back to 320 PCM samples
 ```
 
-`Encode` takes exactly `amrwb.FrameSamples` (320) samples; `Decode` accepts a full RFC 4867
-payload and returns concatenated PCM for every frame it carries.
+`Encode` takes one or more 20 ms frames, a multiple of `amrwb.FrameSamples` (320) samples,
+and returns one payload carrying them all (e.g. 960 samples for `ptime:60`); `Decode`
+accepts a full RFC 4867 payload and returns concatenated PCM for every frame it carries.
+`EncodeTo` and `DecodeTo` do the same without allocating; size the payload buffer with
+`amrwb.MaxPayloadBytesFor(frames)`.
+
+### Payload format (SDP parameters)
+
+The config fields mirror the RFC 4867 `fmtp` parameters, and leaving them unset matches
+their absence. Both sides must match what the session negotiated:
+
+| SDP parameter | `EncoderConfig` | `DecoderConfig` |
+|---|---|---|
+| `octet-align=1` | `OctetAligned` | `OctetAligned` |
+| `crc=1` | `CRC` | `CRC`: a frame failing its CRC is decoded as a bad frame |
+| `robust-sorting=1` | `RobustSorting` | `RobustSorting` |
+| `mode-set=0,2,5` | `ModeSet: []amrwb.Mode{0, 2, 5}` | (any mode is decoded) |
+| `mode-change-period=2` | `ModeChangePeriod: 2` | |
+| `mode-change-neighbor=1` | `ModeChangeNeighbor: true` | |
+
+`crc` and `robust-sorting` imply octet-aligned framing. With a mode set, `SetMode` and
+`SetModeRequest` pick the highest allowed mode at or below the one given. With a
+mode-change period or neighbor rule, `SetMode` sets a target, and the encoder reaches it
+over the next frames as the rules allow. `interleaving` is not supported, so don't offer
+or accept it.
 
 ### Mode requests (CMR)
 
@@ -52,7 +77,7 @@ Each payload carries a codec mode request: the mode its sender would like to rec
 ```go
 dec.DecodeTo(pcm, pkt.Payload)
 if m := dec.ModeRequest(); m != amrwb.NoModeRequest {
-    enc.SetMode(m) // honour the peer's request, within the negotiated mode-set
+    enc.SetMode(m) // honour the peer's request; SetMode keeps to EncoderConfig.ModeSet
 }
 enc.SetModeRequest(amrwb.Mode1265) // ask the peer for 12.65 kbit/s
 ```
@@ -64,12 +89,15 @@ a short SID frame, usually every 8th frame, and an empty payload for the frames 
 The sender has to skip those, while keeping the RTP clock running:
 
 ```go
-payload, _ := enc.Encode(frame)
+payload, _ := enc.Encode(frames)
 if len(payload) > 0 { // empty: NO_DATA, send nothing (RFC 4867, section 4.3.2)
     send(payload, timestamp, enc.Talkspurt()) // Talkspurt: the RTP marker bit
 }
-timestamp += amrwb.FrameSamples
+timestamp += uint32(len(frames)) // 320 per 20 ms frame
 ```
+
+With several frames per packet, NO_DATA frames at the end of a payload are left out, so a
+payload may carry fewer frames than the packet interval.
 
 Any peer may use DTX, whether or not this encoder does, so a receiver has to run the decoder
 every 20 ms, not only when a packet arrives. Otherwise each SID frame plays as a 20 ms burst
@@ -80,6 +108,34 @@ if pkt != nil { // the packet due for this 20 ms interval
     dec.DecodeTo(pcm, pkt.Payload)
 } else {
     dec.DecodeNoData(pcm) // comfort noise in DTX, concealment otherwise
+}
+```
+
+With several frames per packet, call `DecodeNoData` for each 20 ms interval that the packet
+covers but its payload doesn't (`DecodeTo` returns 320 samples per frame).
+
+### `.awb` files
+
+`FileWriter` stores RTP payloads in the single-channel AMR-WB storage format (RFC 4867,
+section 5), for example to record a call without transcoding. `FileReader` reads one back as
+single-frame payloads:
+
+```go
+fw, _ := amrwb.NewFileWriter(f, amrwb.PayloadFormat{OctetAligned: true})
+n, _ := fw.WritePayload(payload) // stores its n frames
+fw.WriteNoData()                 // once per 20 ms not covered by a payload
+
+fr, _ := amrwb.NewFileReader(f, amrwb.PayloadFormat{OctetAligned: true})
+for {
+    n, err := fr.ReadPayload(buf) // buf: amrwb.MaxPayloadBytes
+    if err == io.EOF {
+        break
+    }
+    if n == 0 {
+        dec.DecodeNoData(pcm) // a NO_DATA frame
+    } else {
+        dec.DecodeTo(pcm, buf[:n])
+    }
 }
 ```
 
@@ -182,7 +238,9 @@ noise muting, and SID frames with random parameters in orders no encoder produce
 encoder tests compare the same speech signal and a two-tone signal, through the public
 `Encoder` with mode switches and both payload formats, and with DTX on, switched during a
 stream, and against noise that varies in level and spectrum, and with encoder homing
-frames, alone and back to back, in speech and in DTX.
+frames, alone and back to back, in speech and in DTX. Further tests pack 2, 3 and 5 frames
+per payload in every payload format and require the reference's frames in each one, and
+require a `FileWriter` file to match the reference's `.awb` output byte for byte.
 To run a test directly, set `AMRWB_DIFF` (decoder harness) and `AMRWB_ENC` (encoder harness)
 to the built binaries. `AMRWB_BENCH_FRAMES` tunes the speed comparison's frame count
 (default 4000).
